@@ -856,6 +856,28 @@ def test_healthcheck_reports_active_database_engine(client: TestClient):
     data = res.json()
     assert data["status"] == "ONLINE"
     assert data["database"] in ("sqlite", "postgresql")
+    assert "incidentRecords" in data
+
+
+def test_healthcheck_returns_503_on_simulated_database_failure(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    def failing_db():
+        raise sqlite3.OperationalError("Simulated database failure: /var/data/private.db")
+
+    monkeypatch.setattr(api, "db", failing_db)
+    res = client.get("/api/v1/health")
+    assert res.status_code == 503
+    data = res.json()
+    assert data["status"] == "UNAVAILABLE"
+    assert data["error"] == "Database connectivity check failed."
+    # Ensure no internal error strings or database paths are exposed in response
+    assert "Simulated database failure" not in str(data)
+    assert "private.db" not in str(data)
+
+
+def test_health_endpoint_requires_no_authentication(client: TestClient):
+    """Render health checker polls /api/v1/health without Authorization headers."""
+    res = client.get("/api/v1/health")
+    assert res.status_code == 200
 
 
 def test_production_startup_fails_when_database_url_is_missing_regardless_of_optional_flags(monkeypatch: pytest.MonkeyPatch):

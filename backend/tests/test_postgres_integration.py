@@ -235,3 +235,23 @@ def test_real_postgres_health_endpoint_reports_postgresql(real_postgres_database
     data = res.json()
     assert data["status"] == "ONLINE"
     assert data["database"] == "postgresql"
+    assert "incidentRecords" in data
+
+
+def test_real_postgres_health_endpoint_returns_503_on_simulated_db_failure(real_postgres_database, monkeypatch: pytest.MonkeyPatch):
+    """Verifies that /api/v1/health returns HTTP 503 on database connectivity failure without leaking credentials."""
+    def broken_postgres_db():
+        raise RuntimeError("FATAL: connection to server at 'aws-0-oregon.pooler.supabase.com', port 5432 failed: password authentication failed")
+
+    monkeypatch.setattr(api, "db", broken_postgres_db)
+    client = TestClient(api.app)
+    res = client.get("/api/v1/health")
+    assert res.status_code == 503
+    data = res.json()
+    assert data["status"] == "UNAVAILABLE"
+    assert data["database"] == "postgresql"
+    assert data["error"] == "Database connectivity check failed."
+    # Ensure sensitive connection details, credentials, or hostnames are never exposed in response
+    assert "password" not in str(data).lower()
+    assert "supabase" not in str(data).lower()
+    assert "5432" not in str(data)

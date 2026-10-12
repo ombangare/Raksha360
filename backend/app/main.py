@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import math
 import os
 import re
@@ -18,9 +19,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger("raksha360.api")
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR.parent / ".env")
@@ -701,9 +704,25 @@ def simple_health() -> dict[str, Any]:
 
 
 @app.get("/api/v1/health")
-def api_health() -> dict[str, Any]:
-    with db() as conn:
-        incident_total = conn.execute("SELECT COUNT(*) FROM incidents").fetchone()[0]
+def api_health(response: Response) -> dict[str, Any]:
+    try:
+        with db() as conn:
+            ping = conn.execute("SELECT 1").fetchone()
+            if not ping or ping[0] != 1:
+                raise RuntimeError("Database ping query failed")
+            incident_total = conn.execute("SELECT COUNT(*) FROM incidents").fetchone()[0]
+    except Exception as exc:
+        logger.warning("Database health probe failed: %s", type(exc).__name__)
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {
+            "status": "UNAVAILABLE",
+            "service": "Raksha360 Local Control Room API",
+            "version": APP_VERSION,
+            "database": get_engine_name(),
+            "error": "Database connectivity check failed.",
+            "time": now_iso(),
+        }
+
     return {
         "status": "ONLINE",
         "service": "Raksha360 Local Control Room API",
