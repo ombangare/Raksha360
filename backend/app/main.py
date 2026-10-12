@@ -39,18 +39,36 @@ def get_configured_tokens() -> tuple[str, str]:
 
 DEVICE_TOKEN, DASHBOARD_TOKEN = get_configured_tokens()
 
+
+def get_device_token() -> str:
+    return DEVICE_TOKEN
+
+
+def get_dashboard_token() -> str:
+    return DASHBOARD_TOKEN
+
+
+def get_cors_origins() -> list[str]:
+    raw = os.getenv("RAKSHA360_CORS_ORIGINS", "")
+    if not raw.strip():
+        return ["http://localhost:5173", "http://127.0.0.1:5173"]
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 def validate_environment_configuration(
     env_name: str | None = None,
     device_tok: str | None = None,
     dash_tok: str | None = None,
+    cors_raw: str | None = None,
 ) -> None:
     """
     Fail-fast guard ensuring production-like configurations never silently use placeholder or missing credentials.
     Error messages intentionally omit credential values to prevent log leaks.
     """
     env = (env_name if env_name is not None else os.getenv("RAKSHA360_ENV", os.getenv("ENVIRONMENT", "development"))).strip().lower()
-    d_tok = device_tok if device_tok is not None else os.getenv("RAKSHA360_DEVICE_TOKEN", DEVICE_TOKEN)
-    b_tok = dash_tok if dash_tok is not None else os.getenv("RAKSHA360_DASHBOARD_TOKEN", DASHBOARD_TOKEN)
+    d_tok = device_tok if device_tok is not None else get_device_token()
+    b_tok = dash_tok if dash_tok is not None else get_dashboard_token()
+    raw_cors = cors_raw if cors_raw is not None else os.getenv("RAKSHA360_CORS_ORIGINS", "")
     
     allow_dev_tokens = os.getenv(
         "RAKSHA360_ALLOW_DEV_TOKENS",
@@ -72,8 +90,17 @@ def validate_environment_configuration(
             raise RuntimeError(
                 "Production configuration error: RAKSHA360_DEVICE_TOKEN and RAKSHA360_DASHBOARD_TOKEN must be distinct credentials in production environment."
             )
+        if not raw_cors.strip():
+            raise RuntimeError(
+                "Production configuration error: In production environment, RAKSHA360_CORS_ORIGINS must be explicitly configured with trusted frontend origin(s) (e.g. https://raksha360.vercel.app)."
+            )
+        cors_list = [item.strip() for item in raw_cors.split(",") if item.strip()]
+        if "*" in cors_list:
+            raise RuntimeError(
+                "Production configuration error: Wildcard '*' in RAKSHA360_CORS_ORIGINS is prohibited in production. Explicit origins are required."
+            )
 
-CORS_ORIGINS = [item.strip() for item in os.getenv("RAKSHA360_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if item.strip()]
+CORS_ORIGINS = get_cors_origins()
 APP_VERSION = "1.3.0-local"
 OFFLINE_THRESHOLD_DEFAULT_SECONDS = 180
 OFFLINE_MONITOR_DEFAULT_INTERVAL_SECONDS = 30
@@ -181,6 +208,7 @@ def row_to_dispatch(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 def initialize_database() -> None:
     with db() as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS incidents (
@@ -449,12 +477,12 @@ def constant_time_token_match(candidate: str | None, expected: str) -> bool:
 
 def require_device(authorization: str | None = Header(default=None)) -> None:
     bearer = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else None
-    if not constant_time_token_match(bearer, DEVICE_TOKEN):
+    if not constant_time_token_match(bearer, get_device_token()):
         raise HTTPException(status_code=401, detail="A valid Raksha360 device bearer token is required.")
 
 
 def require_dashboard(x_dashboard_token: str | None = Header(default=None)) -> None:
-    if not constant_time_token_match(x_dashboard_token, DASHBOARD_TOKEN):
+    if not constant_time_token_match(x_dashboard_token, get_dashboard_token()):
         raise HTTPException(status_code=401, detail="Dashboard session is missing or expired. Sign in again.")
 
 
@@ -463,9 +491,9 @@ def require_any_api_client(
     x_dashboard_token: str | None = Header(default=None),
 ) -> str:
     bearer = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else None
-    if constant_time_token_match(bearer, DEVICE_TOKEN):
+    if constant_time_token_match(bearer, get_device_token()):
         return "ANDROID_APP"
-    if constant_time_token_match(x_dashboard_token, DASHBOARD_TOKEN):
+    if constant_time_token_match(x_dashboard_token, get_dashboard_token()):
         return "POLICE_DASHBOARD"
     raise HTTPException(status_code=401, detail="A valid device or dashboard token is required.")
 
@@ -1552,34 +1580,50 @@ def get_audit_log(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, An
 
 @app.websocket("/ws/police")
 async def police_websocket(websocket: WebSocket, token: str = Query(default="")) -> None:
-    already_accepted = False
-    if token:
-        if not constant_time_token_match(token, DASHBOARD_TOKEN):
-            await websocket.close(code=1008, reason="Dashboard token required")
+    env = os.getenv("RAKSHA360_ENV", os.getenv("ENVIRONMENT", "development")).strip().lower()
+    is_production = env in ("production", "prod", "staging")
+
+    if is_production and token:
+        # Strictly reject query tokens in production to prevent credentials appearing in reverse-proxy logs
+        await websocket.close(code=1008, reason="URL query tokens prohibited in production. Authenticate via AUTH frame.")
+        return
+
+    # Accept the connection first so client can authenticate over secure JSON frame
+    await websocket.accept()
+
+    authenticated = False
+    expected_token = get_dashboard_token()
+
+    if token and not is_production:
+        # Legacy development query token compatibility
+        if constant_time_token_match(token, expected_token):
+            authenticated = True
+        else:
+            await websocket.close(code=1008, reason="Dashboard token invalid")
             return
-        env = os.getenv("RAKSHA360_ENV", os.getenv("ENVIRONMENT", "development")).strip().lower()
-        if env in ("production", "prod", "staging"):
-            print("SECURITY AUDIT: WebSocket token passed via URL query parameter; consider migrating to post-connect AUTH frame to avoid proxy access log exposure.")
-    else:
-        # Prevent token leakage in URL access logs: allow connecting without query param and authenticating via initial frame
-        await websocket.accept()
-        already_accepted = True
+
+    if not authenticated:
         try:
             raw_msg = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
             data = json.loads(raw_msg)
-            if not (data.get("type") == "AUTH" and constant_time_token_match(data.get("token"), DASHBOARD_TOKEN)):
-                await websocket.close(code=1008, reason="Dashboard token required")
+            if not isinstance(data, dict) or data.get("type") != "AUTH":
+                await websocket.close(code=1008, reason="Initial message must be an AUTH frame")
                 return
+            if not constant_time_token_match(data.get("token"), expected_token):
+                await websocket.close(code=1008, reason="Invalid authentication token")
+                return
+            authenticated = True
+        except asyncio.TimeoutError:
+            await websocket.close(code=1008, reason="Authentication timed out")
+            return
         except Exception:
-            await websocket.close(code=1008, reason="Dashboard token required")
+            await websocket.close(code=1008, reason="Authentication failed")
             return
 
-    if already_accepted:
-        async with manager.lock:
-            manager.connections.add(websocket)
-        await websocket.send_json({"type": "CONNECTED", "data": {"at": now_iso(), "service": "Raksha360 Control Room"}})
-    else:
-        await manager.connect(websocket)
+    # Connection is verified and authenticated; register with connection manager
+    async with manager.lock:
+        manager.connections.add(websocket)
+    await websocket.send_json({"type": "CONNECTED", "data": {"at": now_iso(), "service": "Raksha360 Control Room"}})
 
     try:
         while True:

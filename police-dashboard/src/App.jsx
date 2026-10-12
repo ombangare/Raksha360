@@ -1823,12 +1823,23 @@ export default function App() {
     let socket; let reconnectTimer; let stopped = false;
     const connect = () => {
       if (stopped) return;
-      try { socket = createLiveSocket(token); } catch { setConnected(false); return; }
-      socket.onopen = () => { setConnected(true); };
+      try { socket = createLiveSocket(); } catch { setConnected(false); return; }
+      socket.onopen = () => {
+        // Authenticate immediately via initial JSON frame to protect token from access logs
+        socket.send(JSON.stringify({ type: 'AUTH', token }));
+      };
       socket.onmessage = (event) => {
         try {
           const packet = JSON.parse(event.data);
-          if (packet.type === 'HEARTBEAT' || packet.type === 'PONG' || packet.type === 'CONNECTED') { setLastUpdate(Date.now()); return; }
+          if (packet.type === 'CONNECTED' || packet.type === 'AUTHENTICATED') {
+            setConnected(true);
+            setLastUpdate(Date.now());
+            return;
+          }
+          if (packet.type === 'HEARTBEAT' || packet.type === 'PONG') {
+            setLastUpdate(Date.now());
+            return;
+          }
           lastEventRef.current = packet.type;
           if (['INCIDENT_CREATED','INCIDENT_UPDATED','EMERGENCY_LOCATION_UPDATED','CONTROL_ROOM_ALERT_QUEUED','REPORT_SUBMITTED','REPORT_UPDATED','DISPATCH_TASK_CREATED','DISPATCH_TASK_UPDATED','CONTACT_ALERT_QUEUED','DEVICE_HEARTBEAT','DEVICE_OFFLINE_DETECTED','DEVICE_ONLINE_AGAIN','DEVICE_OFFLINE_EMAIL_STATUS'].includes(packet.type)) {
             refreshData(true);

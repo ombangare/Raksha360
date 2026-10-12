@@ -34,7 +34,7 @@ export async function verifyDashboardToken(token) {
   return apiRequest('/dashboard/session', { method: 'POST', body: { token } });
 }
 
-export function createLiveSocket(token) {
+export function createLiveSocket() {
   if (!BASE) {
     throw new Error('WebSocket cannot connect: backend API endpoint is not configured.');
   }
@@ -42,7 +42,7 @@ export function createLiveSocket(token) {
   const url = new URL(withoutApi);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.pathname = `${url.pathname.replace(/\/$/, '')}/ws/police`;
-  url.searchParams.set('token', token);
+  // Clean URL: Authentication token is sent via initial AUTH JSON frame instead of query string
   return new WebSocket(url.toString());
 }
 

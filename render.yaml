@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: raksha360-api
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/v1/health
+    disk:
+      name: raksha360-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: RAKSHA360_ENV
+        value: production
+      - key: RAKSHA360_DATA_DIR
+        value: /var/data
+      - key: RAKSHA360_SEED_DEMO_DATA
+        value: "false"
+      - key: RAKSHA360_CORS_ORIGINS
+        sync: false
+      - key: RAKSHA360_DEVICE_TOKEN
+        generateValue: true
+      - key: RAKSHA360_DASHBOARD_TOKEN
+        generateValue: true

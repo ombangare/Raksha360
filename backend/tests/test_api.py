@@ -546,6 +546,7 @@ def test_production_startup_rejection_for_default_or_missing_tokens():
             env_name="production",
             device_tok=api.KNOWN_DEV_DEVICE_TOKEN,
             dash_tok="secure-custom-dashboard-token-12345",
+            cors_raw="https://raksha360.vercel.app",
         )
     assert "RAKSHA360_DEVICE_TOKEN" in str(exc_info.value)
     assert "secure-custom-dashboard-token" not in str(exc_info.value)  # Credential value never disclosed
@@ -556,6 +557,7 @@ def test_production_startup_rejection_for_default_or_missing_tokens():
             env_name="production",
             device_tok="secure-custom-device-token-12345",
             dash_tok=api.KNOWN_DEV_DASHBOARD_TOKEN,
+            cors_raw="https://raksha360.vercel.app",
         )
     assert "RAKSHA360_DASHBOARD_TOKEN" in str(exc_info.value)
     assert "secure-custom-device-token" not in str(exc_info.value)
@@ -566,6 +568,7 @@ def test_production_startup_rejection_for_default_or_missing_tokens():
             env_name="production",
             device_tok="",
             dash_tok="",
+            cors_raw="https://raksha360.vercel.app",
         )
     assert "Production configuration error" in str(exc_info.value)
 
@@ -575,17 +578,41 @@ def test_production_startup_rejection_for_default_or_missing_tokens():
             env_name="production",
             device_tok="identical-secret-shared-between-both",
             dash_tok="identical-secret-shared-between-both",
+            cors_raw="https://raksha360.vercel.app",
         )
     assert "must be distinct" in str(exc_info.value)
     assert "identical-secret" not in str(exc_info.value)
 
 
+def test_production_startup_rejection_for_wildcard_or_missing_cors():
+    # Production with missing CORS origins must raise RuntimeError
+    with pytest.raises(RuntimeError) as exc_info:
+        api.validate_environment_configuration(
+            env_name="production",
+            device_tok="secure-prod-device-token-xyz-987",
+            dash_tok="secure-prod-dashboard-token-abc-456",
+            cors_raw="",
+        )
+    assert "RAKSHA360_CORS_ORIGINS" in str(exc_info.value)
+
+    # Production with wildcard '*' CORS origin must raise RuntimeError
+    with pytest.raises(RuntimeError) as exc_info:
+        api.validate_environment_configuration(
+            env_name="production",
+            device_tok="secure-prod-device-token-xyz-987",
+            dash_tok="secure-prod-dashboard-token-abc-456",
+            cors_raw="*",
+        )
+    assert "Wildcard '*'" in str(exc_info.value)
+
+
 def test_production_configuration_valid_with_distinct_tokens():
-    # Production with valid, distinct, non-default tokens should not raise
+    # Production with valid, distinct, non-default tokens and valid CORS should not raise
     api.validate_environment_configuration(
         env_name="production",
         device_tok="secure-prod-device-token-xyz-987",
         dash_tok="secure-prod-dashboard-token-abc-456",
+        cors_raw="https://raksha360.vercel.app",
     )
 
 
@@ -630,6 +657,33 @@ def test_websocket_frame_authentication_without_query_token(client: TestClient):
         websocket.send_json({"type": "AUTH", "token": "test-dashboard-token"})
         connected = websocket.receive_json()
         assert connected["type"] in ("AUTHENTICATED", "CONNECTED")
+
+
+def test_websocket_frame_authentication_failure_invalid_token(client: TestClient):
+    from starlette.websockets import WebSocketDisconnect
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/police") as websocket:
+            websocket.send_json({"type": "AUTH", "token": "invalid-wrong-token"})
+            websocket.receive_json()
+    assert exc_info.value.code == 1008
+
+
+def test_websocket_access_before_authentication_rejected(client: TestClient):
+    from starlette.websockets import WebSocketDisconnect
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/police") as websocket:
+            websocket.send_json({"type": "PING", "message": "unauthorized"})
+            websocket.receive_json()
+    assert exc_info.value.code == 1008
+
+
+def test_websocket_production_rejects_query_token(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from starlette.websockets import WebSocketDisconnect
+    monkeypatch.setenv("RAKSHA360_ENV", "production")
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/police?token=test-dashboard-token") as websocket:
+            websocket.receive_json()
+    assert exc_info.value.code == 1008
 
 
 def test_fixture_cleanup_preserves_operational_records_with_demo_session(tmp_path: Path):
@@ -693,4 +747,49 @@ def test_fixture_cleanup_preserves_operational_records_with_demo_session(tmp_pat
     assert preserved_device is not None
 
     conn.close()
+
+
+def test_fresh_database_initialization_seeds_reference_data_without_demo_fixtures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    fresh_db = tmp_path / "fresh_test.sqlite3"
+    monkeypatch.setattr(api, "DB_PATH", fresh_db)
+    monkeypatch.setenv("RAKSHA360_SEED_DEMO_DATA", "false")
+
+    api.initialize_database()
+
+    with api.db() as conn:
+        # Reference data exists
+        dir_count = conn.execute("SELECT COUNT(*) FROM police_station_directory").fetchone()[0]
+        assert dir_count == 37
+
+        addr_count = conn.execute("SELECT COUNT(*) FROM police_station_directory WHERE coordinate_status = 'OFFICIAL_ADDRESS_ONLY'").fetchone()[0]
+        assert addr_count == 37
+
+        verified_count = conn.execute("SELECT COUNT(*) FROM police_station_directory WHERE coordinates_verified = 1").fetchone()[0]
+        assert verified_count == 0
+
+        # Pure official public directory snapshot contains no operational coordinates
+        assert conn.execute("SELECT COUNT(*) FROM police_station_directory WHERE latitude IS NOT NULL OR longitude IS NOT NULL").fetchone()[0] == 0
+
+        # Operational tables are completely clean
+        assert conn.execute("SELECT COUNT(*) FROM incidents").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM dispatches").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM stations").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 0
+
+
+def test_cors_preflight_and_response_headers(client: TestClient):
+    # Origin from default allowed origins (e.g. localhost)
+    res = client.get("/api/v1/health", headers={"Origin": "http://localhost:5173"})
+    assert res.status_code == 200
+    assert res.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+    # Preflight OPTIONS request
+    opt = client.options("/api/v1/health", headers={
+        "Origin": "http://localhost:5173",
+        "Access-Control-Request-Method": "GET",
+    })
+    assert opt.status_code == 200
+    assert opt.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
 

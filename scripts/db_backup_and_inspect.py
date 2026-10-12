@@ -6,16 +6,23 @@ import sys
 
 def main():
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    src = os.path.join(repo_root, "backend", "data", "raksha360.sqlite3")
+    data_dir = os.getenv("RAKSHA360_DATA_DIR", os.path.join(repo_root, "backend", "data"))
+    default_db = os.path.join(data_dir, "raksha360.sqlite3")
+    src = os.getenv("RAKSHA360_DATABASE_PATH", default_db)
     if not os.path.exists(src):
         print(f"Error: Database not found at {src}")
         sys.exit(1)
 
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
-    dst = os.path.join(repo_root, "backend", "data", f"raksha360.sqlite3.backup_{ts}")
+    dst = f"{src}.backup_{ts}"
 
-    # Create timestamped backup
-    shutil.copy2(src, dst)
+    # Use SQLite Online Backup API for atomic, WAL-safe snapshot
+    src_conn = sqlite3.connect(src)
+    dst_conn = sqlite3.connect(dst)
+    with dst_conn:
+        src_conn.backup(dst_conn)
+    src_conn.close()
+    dst_conn.close()
     print(f"BACKUP_PATH: {dst}")
 
     # Verify backup opens and check integrity
