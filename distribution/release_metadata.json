@@ -1,0 +1,16 @@
+﻿{
+    "fileSizeBytes":  116525905,
+    "applicationId":  "com.aistudio.naarikavach.safe7x",
+    "targetSdkVersion":  36,
+    "signed":  true,
+    "appName":  "Raksha360",
+    "keyAlias":  "upload",
+    "apkFileName":  "Raksha360-v1.0-release.apk",
+    "versionCode":  1,
+    "buildTimestampUtc":  "2026-10-11T14:34:32Z",
+    "keystorePath":  "C:\\Users\\omban\\Downloads\\Raksha360\\keystores\\raksha360-release.jks",
+    "fileSizeMb":  111.13,
+    "minSdkVersion":  24,
+    "versionName":  "1.0",
+    "sha256":  "24ee61a5cba17041b40a5ec76e5083f3491ccdc9146471e2cc2ed742b6c0ee23"
+}

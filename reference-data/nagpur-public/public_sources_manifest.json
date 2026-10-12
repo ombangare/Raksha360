@@ -1,0 +1,92 @@
+{
+  "retrieved_on": "2026-10-11",
+  "sources": [
+    {
+      "source_id": "nagpur-city-police-stations",
+      "authority": "Nagpur City Police / NIC website",
+      "source_type": "official_public_directory",
+      "url": "https://nagpurpolice.gov.in/police-stations",
+      "page_last_updated": "2026-08-10",
+      "used_for": [
+        "station names",
+        "public phone numbers",
+        "public email addresses",
+        "listed location text"
+      ],
+      "not_used_for": [
+        "live dispatch status",
+        "FIRs",
+        "victim data",
+        "crime event pins",
+        "verified geographic coordinates"
+      ]
+    },
+    {
+      "source_id": "nagpur-city-police-contact",
+      "authority": "Nagpur City Police / NIC website",
+      "source_type": "official_public_contact_page",
+      "url": "https://nagpurpolice.gov.in/contact",
+      "used_for": [
+        "Police office contact",
+        "control-room number",
+        "office address",
+        "emergency contact page"
+      ]
+    },
+    {
+      "source_id": "ncrb-crime-india-2023-catalog",
+      "authority": "National Crime Records Bureau, Ministry of Home Affairs via data.gov.in",
+      "source_type": "official_aggregate_statistics_catalog",
+      "url": "https://www.data.gov.in/catalog/crime-india-2023",
+      "catalog_published_on": "2026-02-10",
+      "catalog_updated_on": "2026-02-13",
+      "used_for": [
+        "source-discovery only; no numerical city stats copied into this pack"
+      ],
+      "note": "The public catalog identifies aggregate 2023 crime statistics. City-year/categorical rows must be extracted from the official NCRB tables and validated before charting; these are annual aggregates, not current/live cases."
+    },
+    {
+      "source_id": "ncrb-crime-in-india-2023-volume-1",
+      "authority": "National Crime Records Bureau",
+      "source_type": "official_annual_aggregate_report",
+      "url": "https://www.ncrb.gov.in/uploads/files/1CrimeinIndia2023PartI1.pdf",
+      "used_for": [
+        "reference for city-wise IPC/SLL/combined tables; not parsed in this pack"
+      ],
+      "note": "Do not populate chart values until exact Nagpur metropolitan city rows and table headings are checked."
+    },
+    {
+      "source_id": "openfreemap",
+      "authority": "OpenFreeMap",
+      "source_type": "map_tile_service_documentation",
+      "url": "https://openfreemap.org/quick_start/",
+      "used_for": [
+        "MapLibre vector style URL setup"
+      ]
+    },
+    {
+      "source_id": "openfreemap-service-info",
+      "authority": "OpenFreeMap",
+      "source_type": "map_service_and_attribution_info",
+      "url": "https://openfreemap.org/",
+      "used_for": [
+        "public instance access and attribution details"
+      ]
+    },
+    {
+      "source_id": "openstreetmap",
+      "authority": "OpenStreetMap contributors",
+      "source_type": "basemap_geographic_data",
+      "url": "https://www.openstreetmap.org/copyright",
+      "used_for": [
+        "geographic basemap data attribution"
+      ]
+    }
+  ],
+  "policy": {
+    "real_data_available": "Official public station directory/contact information and published aggregate report source links are bundled.",
+    "not_bundled": "Real-time police incidents, real FIRs, victim identities, private complaint contents, secure command dashboard data, live dispatch feeds, or records behind login.",
+    "demo_data_rule": "Every incident/report/dispatch fixture is synthetic and must retain is_demo=true plus visible DEMO labels.",
+    "do_not_misrepresent": "Never relabel local SOS/demo records as official Nagpur Police records. A directory source does not imply police integration or authorization."
+  }
+}

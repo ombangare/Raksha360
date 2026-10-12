@@ -1,0 +1,91 @@
+{
+  "metadata": {
+    "data_class": "OFFICIAL_PUBLIC_CONTACTS",
+    "retrieved_on": "2026-10-11",
+    "source_urls": [
+      "https://nagpurpolice.gov.in/contact",
+      "https://nagpurpolice.gov.in/police-stations"
+    ],
+    "note": "Confirm contact numbers on official sources before operational or emergency reliance."
+  },
+  "contacts": [
+    {
+      "id": "india-emergency-112",
+      "name": "Emergency Response Support System",
+      "category": "emergency",
+      "phone": "112",
+      "scope": "India-wide emergency number shown on Nagpur City Police website",
+      "source_url": "https://nagpurpolice.gov.in/police-stations"
+    },
+    {
+      "id": "nagpur-women-1091",
+      "name": "Women Helpline",
+      "category": "women_safety",
+      "phone": "1091",
+      "scope": "Shown on Nagpur City Police website",
+      "source_url": "https://nagpurpolice.gov.in/police-stations"
+    },
+    {
+      "id": "child-1098",
+      "name": "Child Helpline",
+      "category": "child_safety",
+      "phone": "1098",
+      "scope": "Shown on Nagpur City Police website",
+      "source_url": "https://nagpurpolice.gov.in/police-stations"
+    },
+    {
+      "id": "cybercrime-1930",
+      "name": "Cyber Crime Helpline",
+      "category": "cybercrime",
+      "phone": "1930",
+      "scope": "Shown on Nagpur City Police website",
+      "source_url": "https://nagpurpolice.gov.in/police-stations"
+    },
+    {
+      "id": "ambulance-108",
+      "name": "Ambulance",
+      "category": "medical_emergency",
+      "phone": "108",
+      "scope": "Shown on Nagpur City Police website",
+      "source_url": "https://nagpurpolice.gov.in/police-stations"
+    },
+    {
+      "id": "nagpur-police-office",
+      "name": "Nagpur City Police office",
+      "category": "police_office",
+      "phone": "0712-2560601",
+      "scope": "Police Bhavan, behind Collector Office, West High Court Road, Civil Lines, Nagpur, Maharashtra",
+      "source_url": "https://nagpurpolice.gov.in/contact"
+    },
+    {
+      "id": "nagpur-control-room",
+      "name": "Nagpur City Police control room",
+      "category": "police_control_room",
+      "phone": "+91-712-2563232",
+      "scope": "Contact page lists this number for the control room; verify before reliance",
+      "source_url": "https://nagpurpolice.gov.in/contact"
+    }
+  ],
+  "official_links": [
+    {
+      "name": "Nagpur City Police public station directory",
+      "url": "https://nagpurpolice.gov.in/police-stations"
+    },
+    {
+      "name": "Nagpur City Police contact page",
+      "url": "https://nagpurpolice.gov.in/contact"
+    },
+    {
+      "name": "Nagpur City Police citizen services/online complaint links",
+      "url": "https://nagpurpolice.gov.in/police-stations"
+    },
+    {
+      "name": "National Cyber Crime Reporting Portal",
+      "url": "https://cybercrime.gov.in/"
+    },
+    {
+      "name": "Government of India Crime in India 2023 catalog",
+      "url": "https://www.data.gov.in/catalog/crime-india-2023"
+    }
+  ]
+}

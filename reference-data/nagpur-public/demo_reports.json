@@ -1,0 +1,93 @@
+{
+  "metadata": {
+    "data_class": "SYNTHETIC_TEST_FIXTURE",
+    "is_demo": true,
+    "disclaimer": "These reports are not official police complaints and must never be imported as live records."
+  },
+  "records": [
+    {
+      "report_id": "DEMO-REPORT-001",
+      "title": "Training: unsafe walking route lighting",
+      "category": "Unsafe Infrastructure",
+      "description": "SYNTHETIC TEST ONLY. Placeholder report to test category filtering, priority review and status transitions. No real caller or location.",
+      "location_description": "Synthetic demonstration point A · not a real report location",
+      "latitude": 21.1458,
+      "longitude": 79.0882,
+      "occurred_minutes_ago": 21,
+      "status": "New",
+      "priority": "High",
+      "source": "SYNTHETIC_FIXTURE",
+      "is_demo": true
+    },
+    {
+      "report_id": "DEMO-REPORT-002",
+      "title": "Training: public harassment report intake",
+      "category": "Harassment",
+      "description": "SYNTHETIC TEST ONLY. Generic placeholder text for safe report intake and review; not an allegation against a real person.",
+      "location_description": "Location withheld in synthetic fixture",
+      "latitude": null,
+      "longitude": null,
+      "occurred_minutes_ago": 35,
+      "status": "Under Review",
+      "priority": "Critical",
+      "source": "SYNTHETIC_FIXTURE",
+      "is_demo": true
+    },
+    {
+      "report_id": "DEMO-REPORT-003",
+      "title": "Training: cyber harassment support request",
+      "category": "Cyber Harassment",
+      "description": "SYNTHETIC TEST ONLY. Tests complaint metadata and external filing disclaimer. No links, screenshots, identities or case facts are included.",
+      "location_description": "Online · no geographic pin",
+      "latitude": null,
+      "longitude": null,
+      "occurred_minutes_ago": 62,
+      "status": "Assigned",
+      "priority": "High",
+      "source": "SYNTHETIC_FIXTURE",
+      "is_demo": true
+    },
+    {
+      "report_id": "DEMO-REPORT-004",
+      "title": "Training: child handover verification concern",
+      "category": "Child Safety",
+      "description": "SYNTHETIC TEST ONLY. Placeholder report used to validate child-safety casework fields and audit events without real child data.",
+      "location_description": "Synthetic demonstration point H · not a real report location",
+      "latitude": 21.1478,
+      "longitude": 79.101,
+      "occurred_minutes_ago": 72,
+      "status": "New",
+      "priority": "High",
+      "source": "SYNTHETIC_FIXTURE",
+      "is_demo": true
+    },
+    {
+      "report_id": "DEMO-REPORT-005",
+      "title": "Training: safe journey check-in issue",
+      "category": "Safe Journey",
+      "description": "SYNTHETIC TEST ONLY. Tests journey follow-up and report status update behavior.",
+      "location_description": "Synthetic demonstration point E · not a real report location",
+      "latitude": 21.143,
+      "longitude": 79.105,
+      "occurred_minutes_ago": 83,
+      "status": "Closed",
+      "priority": "Medium",
+      "source": "SYNTHETIC_FIXTURE",
+      "is_demo": true
+    },
+    {
+      "report_id": "DEMO-REPORT-006",
+      "title": "Training: missing-person workflow placeholder",
+      "category": "Missing Person",
+      "description": "SYNTHETIC TEST ONLY. Fictional workflow record for validating filters and escalation status; not a real missing-person case.",
+      "location_description": "Location unavailable in the test record",
+      "latitude": null,
+      "longitude": null,
+      "occurred_minutes_ago": 96,
+      "status": "Review Required",
+      "priority": "Critical",
+      "source": "SYNTHETIC_FIXTURE",
+      "is_demo": true
+    }
+  ]
+}

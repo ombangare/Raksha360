@@ -1,0 +1,143 @@
+package com.example.localization
+
+data class LanguageStrings(
+    val appName: String,
+    val homeTab: String,
+    val mapTab: String,
+    val journeyTab: String,
+    val threatTab: String,
+    val privacyTab: String,
+    val emergencyButton: String,
+    val guardMode: String,
+    val guardModeActive: String,
+    val guardModeInactive: String,
+    val voiceSosProtection: String,
+    val enrolledPhrase: String,
+    val speakerVerification: String,
+    val checkArea: String,
+    val startJourney: String,
+    val analyzeThreat: String,
+    val emergencyTriggered: String,
+    val locationSharingActive: String,
+    val contactsNotified: String,
+    val policeNotified: String,
+    val pendingSync: String,
+    val call112Official: String,
+    val stopEmergency: String,
+    val evidenceVault: String,
+    val sha256Verified: String,
+    val demoModeActive: String,
+    val offlineIndicator: String,
+    val onlineIndicator: String,
+    val enrollVoiceNow: String,
+    val settings: String
+)
+
+object AppStrings {
+    private val english = LanguageStrings(
+        appName = "Raksha360",
+        homeTab = "Home",
+        mapTab = "Safety Map",
+        journeyTab = "Journey",
+        threatTab = "Threats",
+        privacyTab = "Privacy",
+        emergencyButton = "SOS EMERGENCY",
+        guardMode = "Guard Mode",
+        guardModeActive = "Guard Mode Active",
+        guardModeInactive = "Guard Mode Inactive",
+        voiceSosProtection = "Voice SOS Protection",
+        enrolledPhrase = "Enrolled Phrase",
+        speakerVerification = "Speaker Verification",
+        checkArea = "Check Area",
+        startJourney = "Start Journey",
+        analyzeThreat = "Analyse Threat",
+        emergencyTriggered = "Emergency Activated",
+        locationSharingActive = "Live Location Sharing Active",
+        contactsNotified = "Trusted Contacts Notified",
+        policeNotified = "Police Control Room Dispatched",
+        pendingSync = "Offline (Pending Sync)",
+        call112Official = "Direct Call 112 (Police)",
+        stopEmergency = "End Emergency",
+        evidenceVault = "Evidence Vault",
+        sha256Verified = "SHA-256 Tamper-Proof Verified",
+        demoModeActive = "Demo Mode / Development Active",
+        offlineIndicator = "Offline Mode",
+        onlineIndicator = "Online",
+        enrollVoiceNow = "Enroll Voice Profile",
+        settings = "Settings"
+    )
+
+    private val hindi = LanguageStrings(
+        appName = "रक्षा360",
+        homeTab = "होम",
+        mapTab = "सुरक्षा नक्शा",
+        journeyTab = "सुरक्षित यात्रा",
+        threatTab = "खतरा विश्लेषण",
+        privacyTab = "गोपनीयता",
+        emergencyButton = "आपातकालीन SOS",
+        guardMode = "गार्ड मोड",
+        guardModeActive = "गार्ड मोड सक्रिय है",
+        guardModeInactive = "गार्ड मोड बंद है",
+        voiceSosProtection = "वॉइस SOS सुरक्षा",
+        enrolledPhrase = "पंजीकृत सुरक्षा वाक्य",
+        speakerVerification = "आवाज़ पहचान सत्यापन",
+        checkArea = "क्षेत्र सुरक्षा जांचें",
+        startJourney = "यात्रा शुरू करें",
+        analyzeThreat = "धमकी का विश्लेषण",
+        emergencyTriggered = "आपातकालीन स्थिति सक्रिय",
+        locationSharingActive = "लाइव लोकेशन साझाकरण चालू",
+        contactsNotified = "विश्वसनीय संपर्कों को सूचना भेजी गई",
+        policeNotified = "पुलिस कंट्रोल रूम को अलर्ट भेजा गया",
+        pendingSync = "ऑफ़लाइन (सिंक लंबित)",
+        call112Official = "पुलिस 112 पर सीधी कॉल",
+        stopEmergency = "आपातकाल समाप्त करें",
+        evidenceVault = "डिजिटल साक्ष्य तिजोरी",
+        sha256Verified = "SHA-256 छेड़छाड़-मुक्त सत्यापित",
+        demoModeActive = "डेमो मोड सक्रिय",
+        offlineIndicator = "ऑफ़लाइन मोड",
+        onlineIndicator = "ऑनलाइन",
+        enrollVoiceNow = "आवाज़ प्रोफ़ाइल बनाएं",
+        settings = "सेटिंग्स"
+    )
+
+    private val marathi = LanguageStrings(
+        appName = "रक्षा360",
+        homeTab = "मुख्यपृष्ठ",
+        mapTab = "सुरक्षा नकाशा",
+        journeyTab = "सुरक्षित प्रवास",
+        threatTab = "धमकी विश्लेषण",
+        privacyTab = "गोपनीयता",
+        emergencyButton = "तातडीची मदत (SOS)",
+        guardMode = "गार्ड मोड",
+        guardModeActive = "गार्ड मोड सक्रिय आहे",
+        guardModeInactive = "गार्ड मोड बंद आहे",
+        voiceSosProtection = "व्हॉइस SOS संरक्षण",
+        enrolledPhrase = "नोंदणीकृत सुरक्षा वाक्य",
+        speakerVerification = "आवाज पडताळणी",
+        checkArea = "परिसर तपासा",
+        startJourney = "प्रवास सुरू करा",
+        analyzeThreat = "धमकीचे विश्लेषण",
+        emergencyTriggered = "आपत्कालीन स्थिती सक्रिय",
+        locationSharingActive = "थेट स्थान शेअरिंग सुरू आहे",
+        contactsNotified = "विश्वासू संपर्कांना कळवले",
+        policeNotified = "पोलीस नियंत्रण कक्षाला अलर्ट",
+        pendingSync = "ऑफलाइन (सिंक प्रलंबित)",
+        call112Official = "थेट पोलीस 112 कॉल",
+        stopEmergency = "आपत्काल समाप्त करा",
+        evidenceVault = "पुरावा तिजोरी",
+        sha256Verified = "SHA-256 सुरक्षित पडताळणी",
+        demoModeActive = "डेमो मोड सुरू आहे",
+        offlineIndicator = "ऑफलाइन मोड",
+        onlineIndicator = "ऑनलाइन",
+        enrollVoiceNow = "आवाज प्रोफाइल नोंदवा",
+        settings = "सेटिंग्ज"
+    )
+
+    fun get(langCode: String): LanguageStrings {
+        return when (langCode.lowercase()) {
+            "hi" -> hindi
+            "mr" -> marathi
+            else -> english
+        }
+    }
+}

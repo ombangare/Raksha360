@@ -1,0 +1,110 @@
+{
+  "dataset_id": "raksha360_parameter_and_feature_coverage_v1",
+  "data_class": "CONFIGURATION_REFERENCE_AND_SYNTHETIC_TEST_PARAMETERS",
+  "source_note": "Extracted from the attached RAKSHA360 audit report and project documentation; verify any value against the implementation before treating it as the current runtime value.",
+  "runtime_parameters": [
+    {
+      "key": "offline_threshold_seconds",
+      "value": 180,
+      "unit": "seconds",
+      "area": "device_watch/offline_email",
+      "meaning": "Server-side missing-heartbeat threshold before a DEVICE_OFFLINE incident may be created."
+    },
+    {
+      "key": "offline_monitor_interval_seconds",
+      "value": 30,
+      "unit": "seconds",
+      "area": "backend_monitor",
+      "meaning": "Server-side monitor polling interval."
+    },
+    {
+      "key": "offline_email_retry_seconds",
+      "value": 900,
+      "unit": "seconds",
+      "area": "email_delivery",
+      "meaning": "Retry backoff for failed/pending recipients; do not resend recipients already marked SENT."
+    },
+    {
+      "key": "mobile_heartbeat_interval_seconds",
+      "value": 60,
+      "unit": "seconds",
+      "area": "device_watch",
+      "meaning": "Architecture report says Guard Mode periodic heartbeat is 60 seconds."
+    },
+    {
+      "key": "location_stream_interval_seconds",
+      "value": 5,
+      "unit": "seconds",
+      "area": "live_location",
+      "meaning": "Architecture report says location stream uses a 5-second interval when active."
+    },
+    {
+      "key": "voice_speaker_similarity_min",
+      "value": 0.82,
+      "unit": "cosine similarity",
+      "area": "voice_sos",
+      "meaning": "Speaker-embedding acceptance threshold reported by audit; calibrate in real device testing."
+    },
+    {
+      "key": "voice_phrase",
+      "value": "Raksha 360, help me",
+      "unit": "exact normalized phrase",
+      "area": "voice_sos",
+      "meaning": "Voice trigger phrase from audit; no loudness-only trigger."
+    },
+    {
+      "key": "school_handover_pin_digits",
+      "value": 6,
+      "unit": "digits",
+      "area": "child_school_handover",
+      "meaning": "One-time random pickup PIN length."
+    },
+    {
+      "key": "school_handover_expiry_minutes_after_pickup",
+      "value": 10,
+      "unit": "minutes",
+      "area": "child_school_handover",
+      "meaning": "PIN expires 10 minutes after scheduled pickup time."
+    },
+    {
+      "key": "school_handover_max_failed_attempts",
+      "value": 5,
+      "unit": "attempts",
+      "area": "child_school_handover",
+      "meaning": "Lock/require review after repeated failed PIN attempts."
+    },
+    {
+      "key": "trusted_contacts_max_count",
+      "value": 20,
+      "unit": "contacts",
+      "area": "trusted_contacts",
+      "meaning": "API model cap noted in the audit implementation."
+    },
+    {
+      "key": "dashboard_rest_fallback_seconds",
+      "value": 15,
+      "unit": "seconds",
+      "area": "dashboard_realtime",
+      "meaning": "REST fallback polling interval noted in the audit report."
+    },
+    {
+      "key": "websocket_reconnect_seconds",
+      "value": 2.5,
+      "unit": "seconds",
+      "area": "dashboard_realtime",
+      "meaning": "WebSocket reconnect delay noted in the audit report."
+    }
+  ],
+  "safety_invariants": [
+    "Powered-off phone cannot transmit new GPS; use only the last location previously received and display its timestamp as NOT LIVE.",
+    "A missed heartbeat does not prove the phone is switched off; it can reflect coverage loss, app/service shutdown, or laptop/backend downtime.",
+    "Only send last-known-location email after explicit user consent, active email contacts, and successfully configured SMTP.",
+    "Never claim SMTP accepted equals inbox delivery.",
+    "Dispatch entries are internal control-room records; official police/112 gateway is NOT_CONFIGURED unless an authorized integration is actually provisioned and verified.",
+    "Real public station contact records must be classified OFFICIAL_PUBLIC_DIRECTORY and never blended into synthetic unit performance metrics.",
+    "All synthetic SOS/report/device/dispatch fixture rows use is_demo=true and clear DEMO display labels.",
+    "Never use real victim identities, real phone numbers, real emergency contacts, actual personal case narratives or private police records in fixtures.",
+    "Coordinates outside geographic bounds or absent coordinates must not be rendered as map markers.",
+    "Never use annual NCRB aggregate counts as incident pins, real-time alerts, or deterministic predictions."
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "metadata": {
+    "data_class": "SYNTHETIC_TEST_FIXTURE",
+    "all_addresses_use_reserved_invalid_domain": true,
+    "no_live_emails_may_be_sent": true
+  },
+  "device_watch_cases": [
+    {
+      "device_id": "DEMO-DEVICE-ONLINE-001",
+      "status": "ONLINE",
+      "monitoring_enabled": true,
+      "last_battery_pct": 82,
+      "offline_location_email_consent": false,
+      "last_latitude": 21.1458,
+      "last_longitude": 79.0882,
+      "location_label": "SYNTHETIC DEMO COORDINATE",
+      "expected": "Online heartbeat visible; no email consent."
+    },
+    {
+      "device_id": "DEMO-DEVICE-OFFLINE-002",
+      "status": "OFFLINE",
+      "monitoring_enabled": true,
+      "last_battery_pct": 18,
+      "offline_location_email_consent": true,
+      "last_latitude": 21.1465,
+      "last_longitude": 79.089,
+      "location_label": "LAST_KNOWN_NOT_LIVE",
+      "last_seen_minutes_ago": 6,
+      "last_location_minutes_ago": 9,
+      "expected": "Offline incident after threshold with timestamp and last-known-not-live label."
+    },
+    {
+      "device_id": "DEMO-DEVICE-DISARMED-003",
+      "status": "DISARMED",
+      "monitoring_enabled": false,
+      "last_battery_pct": null,
+      "offline_location_email_consent": false,
+      "last_latitude": null,
+      "last_longitude": null,
+      "expected": "No offline incident generated for disarmed device."
+    }
+  ],
+  "trusted_contacts": [
+    {
+      "device_id": "DEMO-DEVICE-OFFLINE-002",
+      "name": "Demo Contact A",
+      "relationship": "Test only",
+      "email": "contact-a@example.invalid",
+      "notify_by_email": true,
+      "is_active": true,
+      "is_demo": true
+    },
+    {
+      "device_id": "DEMO-DEVICE-OFFLINE-002",
+      "name": "Demo Contact B",
+      "relationship": "Test only",
+      "email": "contact-b@example.invalid",
+      "notify_by_email": true,
+      "is_active": true,
+      "is_demo": true
+    }
+  ],
+  "email_delivery_cases": [
+    {
+      "incident_id": "DEMO-OFFLINE-009",
+      "email": "contact-a@example.invalid",
+      "status": "SENT",
+      "attempt_count": 1,
+      "expected": "Do not resend on partial retry."
+    },
+    {
+      "incident_id": "DEMO-OFFLINE-009",
+      "email": "contact-b@example.invalid",
+      "status": "FAILED",
+      "attempt_count": 1,
+      "expected": "Retry only this unsuccessful recipient after backoff."
+    },
+    {
+      "incident_id": "DEMO-OFFLINE-NOCONSENT",
+      "email": null,
+      "status": "NOT_CONSENTED",
+      "attempt_count": 0,
+      "expected": "No contacts stored and no email sent."
+    },
+    {
+      "incident_id": "DEMO-OFFLINE-NOSMTP",
+      "email": null,
+      "status": "SMTP_NOT_CONFIGURED",
+      "attempt_count": 0,
+      "expected": "Show not configured; do not claim email sent."
+    }
+  ],
+  "child_safety_cases": [
+    {
+      "case_id": "DEMO-GEOFENCE-CONSENTED",
+      "guardian_consent_confirmed": true,
+      "location_permission_granted": true,
+      "background_location_permission_granted": true,
+      "expected": "Geofence registration eligible, subject to OS capability and explicit consent."
+    },
+    {
+      "case_id": "DEMO-GEOFENCE-NOCONSENT",
+      "guardian_consent_confirmed": false,
+      "location_permission_granted": true,
+      "background_location_permission_granted": true,
+      "expected": "Geofence registration must be denied; log no location tracking."
+    },
+    {
+      "case_id": "DEMO-SCHOOL-PIN-ONE-TIME",
+      "test_pin": "123456",
+      "pin_is_test_only": true,
+      "pin_digits": 6,
+      "max_failed_attempts": 5,
+      "expire_minutes_after_scheduled_pickup": 10,
+      "expected": "Hash only in storage; reject replay; require review after attempt limit."
+    },
+    {
+      "case_id": "DEMO-JOURNEY-SAFE",
+      "journey_deadline_overdue": false,
+      "expected": "Mark safe cancels overdue job/work item."
+    },
+    {
+      "case_id": "DEMO-JOURNEY-OVERDUE",
+      "journey_deadline_overdue": true,
+      "expected": "Overdue notification/incident follows configured policy; all fixture rows remain DEMO."
+    }
+  ]
+}

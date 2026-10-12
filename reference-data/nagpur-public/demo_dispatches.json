@@ -1,0 +1,61 @@
+{
+  "metadata": {
+    "data_class": "SYNTHETIC_TEST_FIXTURE",
+    "is_demo": true,
+    "disclaimer": "Dispatches are UI/test records. These rows do not contact police or deploy responders."
+  },
+  "records": [
+    {
+      "dispatch_id": "DEMO-DISPATCH-001",
+      "event_id": "DEMO-MANUAL-SOS-001",
+      "occurred_minutes_ago": 3,
+      "status": "REQUESTED",
+      "station": "Sitabuldi Police Station (reference only)",
+      "assigned_officer": "Unassigned",
+      "unit_label": "Synthetic training unit · not real police personnel",
+      "channel": "INTERNAL_CONTROL_ROOM",
+      "notes": "DEMO ONLY: Internal test workflow; no external dispatch sent.",
+      "is_demo": true,
+      "external_gateway_status": "NOT_CONFIGURED"
+    },
+    {
+      "dispatch_id": "DEMO-DISPATCH-002",
+      "event_id": "DEMO-CHILD-SOS-003",
+      "occurred_minutes_ago": 11,
+      "status": "ACKNOWLEDGED_IN_CONTROL_ROOM",
+      "station": "Sadar Police Station (reference only)",
+      "assigned_officer": "Unassigned",
+      "unit_label": "Synthetic training unit · not real police personnel",
+      "channel": "INTERNAL_CONTROL_ROOM",
+      "notes": "DEMO ONLY: acknowledgement is an in-app test state only.",
+      "is_demo": true,
+      "external_gateway_status": "NOT_CONFIGURED"
+    },
+    {
+      "dispatch_id": "DEMO-DISPATCH-003",
+      "event_id": "DEMO-JOURNEY-TIMEOUT-005",
+      "occurred_minutes_ago": 22,
+      "status": "UNIT_EN_ROUTE_REPORTED",
+      "station": "Ajni Police Station (reference only)",
+      "assigned_officer": "Operator-entered test value",
+      "unit_label": "Synthetic training unit · not real police personnel",
+      "channel": "INTERNAL_CONTROL_ROOM",
+      "notes": "DEMO ONLY: operator-entered lifecycle test; no unit has been contacted.",
+      "is_demo": true,
+      "external_gateway_status": "NOT_CONFIGURED"
+    },
+    {
+      "dispatch_id": "DEMO-DISPATCH-004",
+      "event_id": "DEMO-SCHOOL-HANDOVER-008",
+      "occurred_minutes_ago": 44,
+      "status": "ON_SCENE_REPORTED",
+      "station": "Ambazari Police Station (reference only)",
+      "assigned_officer": "Unassigned",
+      "unit_label": "Synthetic training unit · not real police personnel",
+      "channel": "INTERNAL_CONTROL_ROOM",
+      "notes": "DEMO ONLY: test state; no external dispatch or official confirmation.",
+      "is_demo": true,
+      "external_gateway_status": "NOT_CONFIGURED"
+    }
+  ]
+}

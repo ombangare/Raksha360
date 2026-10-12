@@ -1,0 +1,36 @@
+{
+  "provider": "OpenFreeMap",
+  "renderer": "MapLibre GL JS",
+  "default_style_id": "bright",
+  "styles": {
+    "bright": {
+      "label": "Bright · colorful streets",
+      "url": "https://tiles.openfreemap.org/styles/bright"
+    },
+    "liberty": {
+      "label": "Liberty · colorful detailed map",
+      "url": "https://tiles.openfreemap.org/styles/liberty"
+    },
+    "dark": {
+      "label": "Dark · night operations",
+      "url": "https://tiles.openfreemap.org/styles/dark"
+    }
+  },
+  "initial_center": [
+    79.0882,
+    21.1458
+  ],
+  "initial_zoom": 12,
+  "initial_pitch": 0,
+  "attribution": "OpenFreeMap © OpenMapTiles · Data from OpenStreetMap",
+  "api_key_required": false,
+  "google_maps_required": false,
+  "satellite_imagery_included": false,
+  "notes": [
+    "Bright is the default to resemble a familiar clear full-color road map.",
+    "No Google Maps API or billing key is used.",
+    "This is a street/vector map, not satellite/photorealistic imagery.",
+    "Always retain visible provider/data attribution; internet access is required for the hosted basemap.",
+    "For emergency-critical deployment, use an approved/managed map service or self-host tiles and monitor service availability."
+  ]
+}

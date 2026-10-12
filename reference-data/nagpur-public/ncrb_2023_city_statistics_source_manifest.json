@@ -1,0 +1,58 @@
+{
+  "title": "NCRB Crime in India 2023 — validated extraction manifest",
+  "retrieved_on": "2026-10-11",
+  "source_url": "https://www.data.gov.in/catalog/crime-india-2023",
+  "publisher": "National Crime Records Bureau (Ministry of Home Affairs), catalog hosted by Government of India Open Government Data Platform",
+  "catalog_publication_date": "2026-02-10",
+  "catalog_updated_date": "2026-02-13",
+  "reported_latest_year_in_catalog": 2023,
+  "available_table_families": [
+    {
+      "table": "1B.1",
+      "name": "IPC Crimes (City-wise) - 2021-2023",
+      "expected_granularity": "metropolitan city by year"
+    },
+    {
+      "table": "1B.2",
+      "name": "SLL Crimes (City-wise) - 2021-2023",
+      "expected_granularity": "metropolitan city by year"
+    },
+    {
+      "table": "1B.3",
+      "name": "IPC & SLL Crimes (City-wise) - 2021-2023",
+      "expected_granularity": "metropolitan city by year"
+    },
+    {
+      "table": "1B.4",
+      "name": "IPC Crimes (Crime Head-wise & City-wise) - 2023",
+      "expected_granularity": "city by crime head for 2023"
+    },
+    {
+      "table": "1B.5",
+      "name": "SLL Crimes (Crime Head-wise & City-wise) - 2023",
+      "expected_granularity": "city by crime head for 2023"
+    },
+    {
+      "table": "Crime Against Women (City-wise) - 2021-2023",
+      "name": "Crime Against Women (City-wise) - 2021-2023",
+      "expected_granularity": "city by year"
+    }
+  ],
+  "source_pdf_url": "https://www.ncrb.gov.in/uploads/files/1CrimeinIndia2023PartI1.pdf",
+  "status": "SOURCE_IDENTIFIED_VALUES_NOT_IMPORTED",
+  "reason": "No numeric Nagpur row is included without validated extraction of the exact official table. Do not infer or fabricate these values.",
+  "import_schema": {
+    "year": "integer",
+    "city": "Nagpur",
+    "scope": "METROPOLITAN_CITY_AGGREGATE",
+    "category": "official table heading / crime head",
+    "registered_cases": "integer exactly transcribed from source, nullable if not available",
+    "source_table": "exact table ID",
+    "source_page": "integer",
+    "source_url": "direct report PDF",
+    "checked_by": "reviewer initials",
+    "checked_at": "YYYY-MM-DD",
+    "validation_status": "VERIFIED_SOURCE_ROW"
+  },
+  "important_caveat": "Annual crime statistics are aggregate counts for a publication year, may be revised, are not geolocated incidents, and must not be shown as live incident pins or predictions. NCRB notes that cases reported by States/UTs may not be comparable purely on raw figures."
+}

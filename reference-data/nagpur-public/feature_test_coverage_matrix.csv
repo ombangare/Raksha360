@@ -1,0 +1,18 @@
+﻿feature,fixture_or_file,trigger_or_area,parameters_to_verify,expected_result_and_safety_boundary
+manual_sos,DEMO-MANUAL-SOS-001,PANIC_BUTTON,Critical severity; coordinate may be absent; durable incident; idempotent event retry,Incident is persisted and visibly DEMO
+voice_sos,DEMO-VOICE-SOS-002,VOICE_SOS,Exact normalized phrase; speaker similarity threshold 0.82; model absence fails closed,No loudness-only trigger; model/device needs real-world calibration
+child_sos,DEMO-CHILD-SOS-003,CHILD_SOS,Child-safety filter; guardian/child data minimized,No real child identities in fixtures
+lost_child,DEMO-LOST-CHILD-004,LOST_CHILD,Critical incident; location optional,No real missing-person case
+safe_journey_timeout,DEMO-JOURNEY-TIMEOUT-005,JOURNEY_TIMEOUT,Deadline; worker cancellation when marked safe; status transitions,Synthetic journey coordinates only
+safe_place_geofence,DEMO-GEOFENCE-EXIT-006,GEOFENCE_EXIT,Guardian consent plus foreground/background permissions,No registration without consent and Android permission
+missed_checkin,DEMO-MISSED-CHECKIN-007,MISSED_CHECK_IN,Check-in deadline and open child metric/filter,Do not use without configured user-owned journey
+school_handover,DEMO-SCHOOL-HANDOVER-008,SCHOOL_HANDOVER_ESCALATION,6-digit one-time PIN hash; expiry 10 min after scheduled pickup; max 5 tries,"No plain-text PIN persistence, replay forbidden"
+device_offline,DEMO-OFFLINE-009,DEVICE_OFFLINE,180s default heartbeat threshold; 30s monitor; server receive time; last location time,Must say last-known NOT LIVE; not proof of powered off
+location_stream,DEMO-LOCATION-STREAM-010,MANUAL_SOS,5s location interval while active; coordinate bounds and timestamp validation,Only real received GPS counts as live; map excludes invalid coordinates
+report_intake,DEMO-REPORT-001..006,REPORTS,"Category, priority, status, sourceEventId, optional coordinates/evidence hash",Not filed with official police/cybercrime portal
+dispatch_lifecycle,DEMO-DISPATCH-001..004,DISPATCH,REQUESTED to COMPLETED/CANCELLED; audit log; no external provider flag,Internal control-room record only; external gateway NOT_CONFIGURED
+trusted_contacts,demo_device_contacts_child_safety.json,OFFLINE_EMAIL,Explicit consent; maximum 20; address validation; active flags,Use example.invalid email for testing; never use real recipients in fixtures
+email_delivery_retry,demo_device_contacts_child_safety.json,EMAIL_RETRY,900s retry; per-recipient SENT deduplication; state machine honest,SMTP must be mocked in automated tests
+map_basemap,map_provider_config.json,MAP,"MapLibre, Bright default, source attribution, valid coordinates only",No Google API key/billing; not satellite imagery
+public_police_directory,nagpur_police_stations.json,STATION_DIRECTORY,Station contacts/source URL/jurisdiction note; coordinates null pending review,Public directory does not mean police dispatch integration
+audit_trail,DEMO-* fixture ids,AUDIT,actor/action/target/time/is_demo captured on mutations,Keep synthetic audit entries marked demo

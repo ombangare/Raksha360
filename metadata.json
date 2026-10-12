@@ -1,0 +1,6 @@
+{
+  "name": "Raksha360",
+  "description": "Native women's and child safety application with on-device Voice SOS, Guard Mode, offline emergency queue, verified evidence vault, and direct emergency response.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

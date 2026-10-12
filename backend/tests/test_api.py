@@ -1,0 +1,539 @@
+from __future__ import annotations
+
+import importlib
+import uuid
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+import backend.app.main as api
+
+
+@pytest.fixture()
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "raksha360-test.sqlite3")
+    monkeypatch.setattr(api, "DEVICE_TOKEN", "test-device-token")
+    monkeypatch.setattr(api, "DASHBOARD_TOKEN", "test-dashboard-token")
+    monkeypatch.setenv("RAKSHA360_SEED_DEMO_DATA", "true")
+    with TestClient(api.app) as test_client:
+        yield test_client
+
+
+def test_health_and_device_authentication(client: TestClient):
+    health = client.get("/api/v1/health")
+    assert health.status_code == 200
+    assert health.json()["status"] == "ONLINE"
+    assert health.json()["officialPoliceGateway"] == "NOT_CONFIGURED"
+
+    accepted = client.post("/api/v1/device/session", headers={"Authorization": "Bearer test-device-token"})
+    assert accepted.status_code == 200
+    assert accepted.json()["authenticated"] is True
+
+    denied = client.post("/api/v1/device/session", headers={"Authorization": "Bearer wrong-token"})
+    assert denied.status_code == 401
+
+
+def test_phone_sos_is_persisted_and_duplicate_retry_is_deduplicated(client: TestClient):
+    headers = {"Authorization": "Bearer test-device-token"}
+    event_id = f"TEST-{uuid.uuid4()}"
+    payload = {
+        "eventId": event_id,
+        "timestamp": 1780000000000,
+        "triggerType": "CHILD_SOS",
+        "phraseDetected": "CHILD_SOS",
+        "speakerConfidence": 0.0,
+        "latitude": 21.1458,
+        "longitude": 79.0882,
+        "accuracyMeters": 12,
+        "locationDescription": "Synthetic test coordinate",
+        "deviceSessionId": "unit-test",
+        "isDemoMode": False,
+    }
+    first = client.post("/api/v1/emergency-events", headers=headers, json=payload)
+    assert first.status_code == 200
+    assert first.json()["status"] == "RECEIVED_IN_CONTROL_ROOM_QUEUE"
+
+    retry = client.post("/api/v1/emergency-events", headers=headers, json=payload)
+    assert retry.status_code == 200
+    assert retry.json()["eventId"] == event_id
+    assert client.get("/api/v1/incidents", headers={"X-Dashboard-Token": "test-dashboard-token"}).status_code == 200
+
+
+def test_location_report_and_internal_dispatch_workflows(client: TestClient):
+    device = {"Authorization": "Bearer test-device-token"}
+    dashboard = {"X-Dashboard-Token": "test-dashboard-token"}
+    event_id = f"TEST-{uuid.uuid4()}"
+    event = client.post("/api/v1/emergency-events", headers=device, json={
+        "eventId": event_id, "triggerType": "PANIC_BUTTON", "isDemoMode": False,
+        "latitude": 21.1458, "longitude": 79.0882,
+    })
+    assert event.status_code == 200
+
+    location = client.post("/api/v1/emergency-locations", headers=device, json={
+        "eventId": event_id, "latitude": 21.1460, "longitude": 79.0885,
+        "accuracyMeters": 9.5, "speedKmph": 0, "batteryPct": 72,
+    })
+    assert location.status_code == 200
+    assert location.json()["recorded"] is True
+
+    report = client.post("/api/v1/reports", headers=device, json={
+        "title": "Synthetic child safety report",
+        "category": "Child safety",
+        "description": "Testing persistence in an isolated temporary database.",
+        "isDemoMode": True,
+    })
+    assert report.status_code == 200
+    report_id = report.json()["reportId"]
+    assert client.get("/api/v1/reports", headers=dashboard).json()["total"] >= 1
+    update_report = client.patch(f"/api/v1/reports/{report_id}/status", headers=dashboard, json={
+        "status": "Under Review", "priority": "High", "notes": "Unit test status change",
+    })
+    assert update_report.status_code == 200
+
+    dispatch = client.post(f"/api/v1/incidents/{event_id}/dispatch", headers=dashboard, json={
+        "station": "Test-only station",
+        "assignedOfficer": "Test-only officer",
+        "unitLabel": "Synthetic unit",
+        "channel": "INTERNAL_CONTROL_ROOM",
+        "notes": "Never dispatches externally in this test.",
+    })
+    assert dispatch.status_code == 200
+    assert dispatch.json()["externalDispatchSent"] is False
+    assert dispatch.json()["external_gateway_status"] == "NOT_CONFIGURED"
+
+    update_dispatch = client.patch(f"/api/v1/dispatches/{dispatch.json()['dispatch_id']}/status", headers=dashboard, json={
+        "status": "ACKNOWLEDGED_IN_CONTROL_ROOM", "notes": "Operator test acknowledgment",
+    })
+    assert update_dispatch.status_code == 200
+    assert update_dispatch.json()["status"] == "ACKNOWLEDGED_IN_CONTROL_ROOM"
+
+
+def test_local_police_alert_never_claims_official_dispatch(client: TestClient):
+    headers = {"Authorization": "Bearer test-device-token"}
+    event_id = f"TEST-{uuid.uuid4()}"
+    client.post("/api/v1/emergency-events", headers=headers, json={
+        "eventId": event_id, "triggerType": "VOICE_SOS", "isDemoMode": False,
+    })
+    response = client.post("/api/v1/police-alerts", headers=headers, json={"eventId": event_id})
+    assert response.status_code == 200
+    assert response.json()["acknowledged"] is False
+    assert response.json()["externalGatewayStatus"] == "NOT_CONFIGURED"
+
+
+def test_trusted_contact_alert_is_queued_without_claiming_delivery(client: TestClient):
+    device = {"Authorization": "Bearer test-device-token"}
+    event_id = f"TEST-{uuid.uuid4()}"
+    event = client.post("/api/v1/emergency-events", headers=device, json={
+        "eventId": event_id,
+        "triggerType": "CHILD_SOS",
+        "isDemoMode": False,
+    })
+    assert event.status_code == 200
+
+    response = client.post("/api/v1/trusted-contact-alerts", headers=device, json={
+        "eventId": event_id,
+        "triggerType": "CHILD_SOS",
+        "contacts": [{"name": "Synthetic Guardian", "phoneNumber": "+910000000000", "deliveryChannels": ["SMS"]}],
+        "address": "Synthetic test location",
+    })
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["sentCount"] == 0
+    assert payload["channelsDispatched"] == []
+    assert payload["deliveryStatus"] == "PENDING_PROVIDER_CONFIGURATION"
+    assert "No SMS" in payload["message"]
+
+
+def test_websocket_receives_new_phone_incident_without_refresh(client: TestClient):
+    device = {"Authorization": "Bearer test-device-token"}
+    event_id = f"TEST-{uuid.uuid4()}"
+    with client.websocket_connect("/ws/police?token=test-dashboard-token") as socket:
+        connected = socket.receive_json()
+        assert connected["type"] == "CONNECTED"
+
+        response = client.post("/api/v1/emergency-events", headers=device, json={
+            "eventId": event_id,
+            "triggerType": "PANIC_BUTTON",
+            "latitude": 21.1458,
+            "longitude": 79.0882,
+            "isDemoMode": False,
+        })
+        assert response.status_code == 200
+        packet = socket.receive_json()
+        assert packet["type"] == "INCIDENT_CREATED"
+        assert packet["data"]["event_id"] == event_id
+
+
+
+def test_device_heartbeat_records_last_known_location_and_explicit_email_consent(client: TestClient):
+    device = {"Authorization": "Bearer test-device-token"}
+    response = client.post("/api/v1/device/heartbeat", headers=device, json={
+        "deviceId": "test-device-heartbeat-001",
+        "timestamp": api.utc_ms() - 600_000,
+        "monitoringEnabled": True,
+        "offlineLocationEmailConsent": True,
+        "latitude": 21.1234,
+        "longitude": 79.1234,
+        "accuracyMeters": 7.5,
+        "locationTimestamp": api.utc_ms(),
+        "batteryPct": 64,
+        "contacts": [{
+            "name": "Synthetic Contact", "relationship": "Guardian", "email": "trusted@example.com",
+            "notifyByEmail": True, "isActive": True,
+        }],
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["monitoringEnabled"] is True
+    assert response.json()["lastLocationRecorded"] is True
+    assert response.json()["emailContactsConfigured"] == 1
+    with api.db() as conn:
+        row = conn.execute("SELECT * FROM device_status WHERE device_id = ?", ("test-device-heartbeat-001",)).fetchone()
+        contact = conn.execute("SELECT * FROM emergency_contacts WHERE device_id = ?", ("test-device-heartbeat-001",)).fetchone()
+    assert row["last_latitude"] == pytest.approx(21.1234)
+    assert row["last_longitude"] == pytest.approx(79.1234)
+    assert row["last_seen_at"] > api.utc_ms() - 60_000  # server receive time, not the stale client clock
+    assert row["offline_location_email_consent"] == 1
+    assert contact["email"] == "trusted@example.com"
+
+
+def test_missed_heartbeat_creates_last_known_location_incident_and_sends_consented_email(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    import asyncio
+
+    device = {"Authorization": "Bearer test-device-token"}
+    monkeypatch.setenv("RAKSHA360_OFFLINE_THRESHOLD_SECONDS", "60")
+    monkeypatch.setenv("RAKSHA360_SMTP_HOST", "smtp.example.test")
+    monkeypatch.setenv("RAKSHA360_SMTP_FROM_EMAIL", "raksha360@example.test")
+    sent = []
+    monkeypatch.setattr(api, "send_offline_location_email", lambda contact, status, incident_id: sent.append((contact["email"], status["last_latitude"], incident_id)))
+    broadcasts = []
+    async def capture_broadcast(event_type, data):
+        broadcasts.append((event_type, data))
+    monkeypatch.setattr(api.manager, "broadcast", capture_broadcast)
+    device_id = "test-device-offline-002"
+    last_seen = api.utc_ms() - 180_000
+    response = client.post("/api/v1/device/heartbeat", headers=device, json={
+        "deviceId": device_id,
+        "timestamp": last_seen,
+        "monitoringEnabled": True,
+        "offlineLocationEmailConsent": True,
+        "latitude": 21.1555,
+        "longitude": 79.1555,
+        "accuracyMeters": 11,
+        "locationTimestamp": last_seen,
+        "contacts": [{"name": "Synthetic Contact", "relationship": "Guardian", "email": "offline@example.com", "notifyByEmail": True, "isActive": True}],
+    })
+    assert response.status_code == 200, response.text
+    # Last-heartbeat freshness is measured by the server, never by a client-supplied clock.
+    with api.db() as conn:
+        conn.execute("UPDATE device_status SET last_seen_at = ? WHERE device_id = ?", (last_seen, device_id))
+    asyncio.run(api.evaluate_offline_devices_once())
+    with api.db() as conn:
+        status = conn.execute("SELECT * FROM device_status WHERE device_id = ?", (device_id,)).fetchone()
+        incident = conn.execute("SELECT * FROM incidents WHERE event_id = ?", (status["offline_incident_id"],)).fetchone()
+    assert status["status"] == "OFFLINE"
+    assert status["offline_email_delivery_status"] == "SENT"
+    assert incident["trigger_type"] == "DEVICE_OFFLINE"
+    assert incident["latitude"] == pytest.approx(21.1555)
+    assert incident["longitude"] == pytest.approx(79.1555)
+    assert "Last known" in incident["location_description"]
+    assert sent and sent[0][0] == "offline@example.com"
+    assert [event for event, _ in broadcasts if event in {"DEVICE_OFFLINE_DETECTED", "INCIDENT_CREATED"}] == ["DEVICE_OFFLINE_DETECTED", "INCIDENT_CREATED"]
+
+
+def test_offline_email_retry_does_not_duplicate_successful_recipient(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    import asyncio
+
+    device = {"Authorization": "Bearer test-device-token"}
+    monkeypatch.setenv("RAKSHA360_OFFLINE_THRESHOLD_SECONDS", "60")
+    monkeypatch.setenv("RAKSHA360_SMTP_HOST", "smtp.example.test")
+    monkeypatch.setenv("RAKSHA360_SMTP_FROM_EMAIL", "raksha360@example.test")
+    attempts: dict[str, int] = {"first@example.com": 0, "second@example.com": 0}
+
+    def fake_send(contact, status, incident_id):
+        email = contact["email"]
+        attempts[email] += 1
+        if email == "second@example.com" and attempts[email] == 1:
+            raise RuntimeError("synthetic SMTP failure")
+
+    monkeypatch.setattr(api, "send_offline_location_email", fake_send)
+    device_id = "test-device-offline-retry-003"
+    last_seen = api.utc_ms() - 180_000
+    response = client.post("/api/v1/device/heartbeat", headers=device, json={
+        "deviceId": device_id,
+        "monitoringEnabled": True,
+        "offlineLocationEmailConsent": True,
+        "latitude": 21.1444,
+        "longitude": 79.1444,
+        "locationTimestamp": last_seen,
+        "contacts": [
+            {"name": "Contact One", "email": "first@example.com", "notifyByEmail": True, "isActive": True},
+            {"name": "Contact Two", "email": "second@example.com", "notifyByEmail": True, "isActive": True},
+        ],
+    })
+    assert response.status_code == 200, response.text
+    with api.db() as conn:
+        conn.execute("UPDATE device_status SET last_seen_at=? WHERE device_id=?", (last_seen, device_id))
+    asyncio.run(api.evaluate_offline_devices_once())
+    with api.db() as conn:
+        row = conn.execute("SELECT * FROM device_status WHERE device_id=?", (device_id,)).fetchone()
+    assert row["offline_email_delivery_status"] == "PARTIAL"
+
+    # Simulate reconnection before retry: only the failed recipient should be retried.
+    reconnection = client.post("/api/v1/device/heartbeat", headers=device, json={
+        "deviceId": device_id,
+        "monitoringEnabled": True,
+        "offlineLocationEmailConsent": True,
+        "contacts": [
+            {"name": "Contact One", "email": "first@example.com", "notifyByEmail": True, "isActive": True},
+            {"name": "Contact Two", "email": "second@example.com", "notifyByEmail": True, "isActive": True},
+        ],
+    })
+    assert reconnection.status_code == 200, reconnection.text
+    with api.db() as conn:
+        reconnected = conn.execute("SELECT * FROM device_status WHERE device_id=?", (device_id,)).fetchone()
+    assert reconnected["status"] == "ONLINE"
+    assert reconnected["offline_detected_at"] is None
+    asyncio.run(api.evaluate_offline_devices_once())
+    assert attempts["first@example.com"] == 1
+    assert attempts["second@example.com"] == 2
+    with api.db() as conn:
+        rows = conn.execute("SELECT email, status, attempt_count FROM offline_email_deliveries WHERE device_id=?", (device_id,)).fetchall()
+        status = conn.execute("SELECT offline_email_delivery_status, offline_email_sent_at FROM device_status WHERE device_id=?", (device_id,)).fetchone()
+    deliveries = {item["email"]: (item["status"], item["attempt_count"]) for item in rows}
+    assert deliveries["first@example.com"] == ("SENT", 1)
+    assert deliveries["second@example.com"] == ("SENT", 2)
+    assert status["offline_email_delivery_status"] == "SENT"
+    assert status["offline_email_sent_at"] is not None
+
+
+def test_offline_monitor_does_not_email_without_explicit_consent(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    import asyncio
+
+    device = {"Authorization": "Bearer test-device-token"}
+    monkeypatch.setenv("RAKSHA360_OFFLINE_THRESHOLD_SECONDS", "60")
+    monkeypatch.setenv("RAKSHA360_SMTP_HOST", "smtp.example.test")
+    monkeypatch.setenv("RAKSHA360_SMTP_FROM_EMAIL", "raksha360@example.test")
+    sent = []
+    monkeypatch.setattr(api, "send_offline_location_email", lambda *args: sent.append(args))
+    device_id = "test-device-offline-consent-004"
+    last_seen = api.utc_ms() - 180_000
+    response = client.post("/api/v1/device/heartbeat", headers=device, json={
+        "deviceId": device_id,
+        "monitoringEnabled": True,
+        "offlineLocationEmailConsent": False,
+        "latitude": 21.1444,
+        "longitude": 79.1444,
+        "locationTimestamp": last_seen,
+        "contacts": [{"name": "No Consent", "email": "no-consent@example.com", "notifyByEmail": True, "isActive": True}],
+    })
+    assert response.status_code == 200, response.text
+    with api.db() as conn:
+        conn.execute("UPDATE device_status SET last_seen_at=? WHERE device_id=?", (last_seen, device_id))
+    asyncio.run(api.evaluate_offline_devices_once())
+    assert sent == []
+    with api.db() as conn:
+        row = conn.execute("SELECT offline_email_delivery_status, offline_location_email_consent FROM device_status WHERE device_id=?", (device_id,)).fetchone()
+        contacts = conn.execute("SELECT COUNT(*) FROM emergency_contacts WHERE device_id=?", (device_id,)).fetchone()[0]
+    assert row["offline_email_delivery_status"] == "NOT_CONSENTED"
+    assert row["offline_location_email_consent"] == 0
+    assert contacts == 0
+
+
+def test_disarmed_device_does_not_generate_offline_incident(client: TestClient):
+    import asyncio
+
+    device = {"Authorization": "Bearer test-device-token"}
+    device_id = "test-device-disarmed-005"
+    response = client.post("/api/v1/device/heartbeat", headers=device, json={
+        "deviceId": device_id,
+        "monitoringEnabled": False,
+        "offlineLocationEmailConsent": True,
+        "latitude": 21.1333,
+        "longitude": 79.1333,
+        "contacts": [{"name": "Synthetic Contact", "email": "disarmed@example.com", "notifyByEmail": True, "isActive": True}],
+    })
+    assert response.status_code == 200, response.text
+    with api.db() as conn:
+        conn.execute("UPDATE device_status SET last_seen_at=? WHERE device_id=?", (api.utc_ms() - 600_000, device_id))
+    asyncio.run(api.evaluate_offline_devices_once())
+    with api.db() as conn:
+        status = conn.execute("SELECT status, monitoring_enabled FROM device_status WHERE device_id=?", (device_id,)).fetchone()
+        incident_count = conn.execute("SELECT COUNT(*) FROM incidents WHERE device_session_id=?", (device_id,)).fetchone()[0]
+    assert status["monitoring_enabled"] == 0
+    assert status["status"] == "DISARMED"
+    assert incident_count == 0
+
+
+def test_public_police_station_directory_is_authenticated_provenanced_and_idempotent(client: TestClient):
+    dashboard = {"X-Dashboard-Token": "test-dashboard-token"}
+    denied = client.get("/api/v1/police-station-directory")
+    assert denied.status_code == 401
+
+    first = client.get("/api/v1/police-station-directory", headers=dashboard)
+    assert first.status_code == 200
+    payload = first.json()
+    assert payload["dataClass"] == "OFFICIAL_PUBLIC_DIRECTORY"
+    assert payload["total"] == 37
+    assert payload["sourceUrl"] == "https://nagpurpolice.gov.in/police-stations"
+    assert all(item["isOfficialPublicDirectory"] is True for item in payload["items"])
+    assert all(item["isDemo"] is False for item in payload["items"])
+    assert all(item["latitude"] is None and item["longitude"] is None for item in payload["items"])
+    assert all(item["coordinates_verified"] is False for item in payload["items"])
+
+    # Reinitialization imports public directory rows with stable IDs rather than duplicates.
+    api.initialize_database()
+    second = client.get("/api/v1/police-station-directory", headers=dashboard)
+    assert second.status_code == 200
+    assert second.json()["total"] == 37
+    assert [item["station_id"] for item in second.json()["items"]] == [
+        item["station_id"] for item in payload["items"]
+    ]
+
+
+def test_public_directory_preserves_manually_approved_coordinates_and_avoids_operational_inference(client: TestClient):
+    dashboard = {"X-Dashboard-Token": "test-dashboard-token"}
+    # Simulate manual geocoding review approval for one station
+    with api.db() as conn:
+        conn.execute(
+            """UPDATE police_station_directory
+               SET latitude = 21.1458, longitude = 79.0882, coordinates_verified = 1,
+                   coordinate_source = 'MANUAL_OSM_REVIEW', coordinate_checked_at = '2026-10-11'
+               WHERE station_id = 'NGP-AJNI'"""
+        )
+
+    # Reseeding/initialization must NOT overwrite human-approved coordinates
+    api.initialize_database()
+
+    response = client.get("/api/v1/police-station-directory", headers=dashboard)
+    assert response.status_code == 200
+    items = {item["station_id"]: item for item in response.json()["items"]}
+    ajni = items["NGP-AJNI"]
+    assert ajni["coordinates_verified"] is True
+    assert ajni["latitude"] == pytest.approx(21.1458)
+    assert ajni["longitude"] == pytest.approx(79.0882)
+    assert ajni["coordinate_source"] == "MANUAL_OSM_REVIEW"
+
+    # Verify other stations remain null and unverified
+    ambazari = items["NGP-AMBAZARI"]
+    assert ambazari["latitude"] is None
+    assert ambazari["longitude"] is None
+    assert ambazari["coordinates_verified"] is False
+
+    # Verify no station claims operational status
+    for item in response.json()["items"]:
+        assert item["status"] == "PUBLIC_DIRECTORY_REFERENCE"
+        assert item["status"] not in {"AVAILABLE", "ON_DUTY", "DISPATCHED", "ONLINE"}
+
+
+def test_official_directory_and_demo_units_in_separate_endpoints(client: TestClient):
+    dashboard = {"X-Dashboard-Token": "test-dashboard-token"}
+    pub_dir = client.get("/api/v1/police-station-directory", headers=dashboard).json()
+    demo_units = client.get("/api/v1/stations", headers=dashboard).json()
+
+    assert pub_dir["dataClass"] == "OFFICIAL_PUBLIC_DIRECTORY"
+    assert pub_dir["total"] == 37
+    assert all(item["isOfficialPublicDirectory"] is True for item in pub_dir["items"])
+    assert all(item["isDemo"] is False for item in pub_dir["items"])
+
+    assert demo_units["total"] >= 1
+    assert all(item["isDemo"] is True for item in demo_units["items"])
+    assert all(item.get("status") == "DEMO_ONLY" for item in demo_units["items"])
+
+
+def test_synthetic_fixture_importer_and_clear_lifecycle(client: TestClient):
+    import sys
+    workspace_root = Path(__file__).resolve().parents[2]
+    if str(workspace_root) not in sys.path:
+        sys.path.insert(0, str(workspace_root))
+    from scripts.import_raksha360_fixtures import import_demo_fixtures, clear_demo_fixtures
+
+    device = {"Authorization": "Bearer test-device-token"}
+    dashboard = {"X-Dashboard-Token": "test-dashboard-token"}
+
+    # 1. Post a real live user event
+    live_event_id = f"LIVE-{uuid.uuid4()}"
+    client.post("/api/v1/emergency-events", headers=device, json={
+        "eventId": live_event_id,
+        "triggerType": "PANIC_BUTTON",
+        "isDemoMode": False,
+        "latitude": 21.1400,
+        "longitude": 79.0800,
+    })
+
+    # 2. Run explicit demo importer
+    with api.db() as conn:
+        counts = import_demo_fixtures(conn)
+    assert counts["incidents"] == 10
+    assert counts["reports"] == 6
+    assert counts["dispatches"] == 4
+    assert counts["device_statuses"] == 3
+
+    # Check incidents: live event is is_demo=False, fixtures are is_demo=True
+    incidents = client.get("/api/v1/incidents", headers=dashboard).json()["items"]
+    live_record = next(item for item in incidents if item["event_id"] == live_event_id)
+    assert live_record["isDemo"] is False
+
+    demo_voice = next(item for item in incidents if item["event_id"] == "DEMO-VOICE-SOS-002")
+    assert demo_voice["isDemo"] is True
+    assert demo_voice["phrase_detected"] == "Raksha 360, help me"
+    assert demo_voice["details"]["source"] == "SYNTHETIC_FIXTURE"
+
+    demo_offline = next(item for item in incidents if item["event_id"] == "DEMO-OFFLINE-009")
+    assert demo_offline["isDemo"] is True
+    assert "LAST KNOWN LOCATION" in demo_offline["location_description"]
+    assert "NOT LIVE" in demo_offline["location_description"]
+
+    # 3. Running demo importer again is idempotent
+    with api.db() as conn:
+        counts_second = import_demo_fixtures(conn)
+    assert counts_second["incidents"] == 10
+
+    # 4. Clear demo fixtures
+    with api.db() as conn:
+        clear_counts = clear_demo_fixtures(conn)
+    assert clear_counts["incidents"] >= 10
+
+    # Verify live event is PRESERVED, and all DEMO-* events are deleted
+    remaining = client.get("/api/v1/incidents", headers=dashboard).json()["items"]
+    assert any(item["event_id"] == live_event_id for item in remaining)
+    assert not any(item["event_id"].startswith("DEMO-") for item in remaining)
+
+
+def test_public_helplines_and_ncrb_manifest_endpoints(client: TestClient):
+    dashboard = {"X-Dashboard-Token": "test-dashboard-token"}
+
+    helplines = client.get("/api/v1/public-helplines", headers=dashboard)
+    assert helplines.status_code == 200
+    h_data = helplines.json()
+    assert h_data["metadata"]["data_class"] == "OFFICIAL_PUBLIC_CONTACTS"
+    phones = [c["phone"] for c in h_data["contacts"]]
+    assert "112" in phones
+    assert "1091" in phones
+    assert "1098" in phones
+    assert "1930" in phones
+    assert "108" in phones
+    assert any("2560601" in p for p in phones)  # Police office
+    assert any("2563232" in p for p in phones)  # Control room
+
+    ncrb = client.get("/api/v1/ncrb-manifest", headers=dashboard)
+    assert ncrb.status_code == 200
+    n_data = ncrb.json()
+    assert n_data["status"] == "SOURCE_IDENTIFIED_VALUES_NOT_IMPORTED"
+    assert "data.gov.in" in n_data["source_url"]
+
+
+def test_invalid_email_domain_and_unconfigured_smtp_never_sent(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("RAKSHA360_SMTP_HOST", "")
+    called = []
+    monkeypatch.setattr(api, "send_offline_location_email", lambda *args: called.append(args))
+
+    device = {"Authorization": "Bearer test-device-token"}
+    res = client.post("/api/v1/device/heartbeat", headers=device, json={
+        "deviceId": "dev-invalid-email",
+        "monitoringEnabled": True,
+        "offlineLocationEmailConsent": True,
+        "contacts": [{"name": "Demo", "email": "test@example.invalid", "notifyByEmail": True, "isActive": True}],
+    })
+    assert res.status_code == 200
+    assert called == []

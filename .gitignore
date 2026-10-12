@@ -1,0 +1,48 @@
+*.iml
+.gradle/
+.kotlin/
+local.properties
+/local.properties
+.idea/
+.DS_Store
+build/
+**/build/
+captures/
+.externalNativeBuild/
+.cxx/
+**/.cxx/
+
+# Environment files and credentials
+.env
+.env.*
+!.env.example
+.env.release
+.env.local
+
+# Local runtime databases, backups, and WAL files
+backend/data/*.sqlite3*
+backend/data/backups/
+*.sqlite3
+*.sqlite3-*
+*.sqlite3.*
+
+# Python caches and virtual environments
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Frontend builds and dependencies
+**/node_modules/
+police-dashboard/dist/
+
+# Android signing keys, keystores, and release artifacts
+debug.keystore
+*.jks
+*.keystore
+*.p12
+keystores/
+distribution/*.apk
+distribution/*.aab
+*.zip
+
