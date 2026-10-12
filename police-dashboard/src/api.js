@@ -1,9 +1,16 @@
-const DEFAULT_BASE = 'http://127.0.0.1:4000/api/v1';
-const BASE = (import.meta.env.VITE_API_BASE_URL || DEFAULT_BASE).replace(/\/$/, '');
+// Development fallback only applies in local Vite dev mode.
+// In production builds, never silently fall back to localhost, 127.0.0.1, or 10.0.2.2.
+const DEV_DEFAULT_BASE = 'http://127.0.0.1:4000/api/v1';
+const RAW_BASE = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? DEV_DEFAULT_BASE : '');
+const BASE = RAW_BASE ? RAW_BASE.replace(/\/$/, '') : '';
 
+export const isApiConfigured = () => Boolean(BASE);
 export const getApiBase = () => BASE;
 
 export async function apiRequest(path, { token, method = 'GET', body, signal } = {}) {
+  if (!BASE) {
+    throw new Error('Public backend API endpoint is not configured (VITE_API_BASE_URL required in production).');
+  }
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers['X-Dashboard-Token'] = token;
@@ -28,6 +35,9 @@ export async function verifyDashboardToken(token) {
 }
 
 export function createLiveSocket(token) {
+  if (!BASE) {
+    throw new Error('WebSocket cannot connect: backend API endpoint is not configured.');
+  }
   const withoutApi = BASE.replace(/\/api\/v1\/?$/, '');
   const url = new URL(withoutApi);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';

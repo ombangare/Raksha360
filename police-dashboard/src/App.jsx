@@ -8,7 +8,7 @@ import {
   PhoneCall, Radio, RadioTower, RefreshCw, Search, Send, Settings2, ShieldAlert, ShieldCheck,
   Siren, SlidersHorizontal, Smartphone, UserRound, Users, X, Zap,
 } from 'lucide-react';
-import { api, createLiveSocket, formatTime, getApiBase, signalTone, timeAgo, verifyDashboardToken } from './api.js';
+import { api, createLiveSocket, formatTime, getApiBase, isApiConfigured, signalTone, timeAgo, verifyDashboardToken } from './api.js';
 import MapLibreMap from './components/MapLibreMap.jsx';
 
 const NAV = [
@@ -102,23 +102,16 @@ function AuthGate({ onLogin, busy, error, onHealth, health }) {
             <div><ShieldAlert size={17} /><span>Auditable incident handling</span></div>
           </div>
         </div>
-        <div className="login-footer">RAKSHA360 LOCAL CONTROL ROOM <span>•</span> DEVELOPMENT ENVIRONMENT</div>
+        <div className="login-footer">
+          RAKSHA360 CONTROL ROOM <span>•</span> {isApiConfigured() ? 'LOCAL DEVELOPMENT' : 'PUBLIC PREVIEW'}
+        </div>
       </div>
       <div className="login-right">
         <form className="login-card glass-panel" onSubmit={(event) => { event.preventDefault(); onLogin(token); }}>
           <div className="login-card-icon"><LockKeyhole size={22} /></div>
           <div className="eyebrow">SECURE OPERATOR SESSION</div>
-          <h2>Welcome back</h2>
           <p>
-            Enter the local dashboard token configured in <code>.env</code> (click to auto-fill):
-            <br />
-            <code
-              style={{ cursor: 'pointer', display: 'inline-block', marginTop: 4, padding: '3px 6px', background: '#EDF2F7', borderRadius: 4, color: '#2563EB', fontWeight: 600 }}
-              title="Click to auto-fill development token"
-              onClick={() => setToken('local-dev-dashboard-token-change-me')}
-            >
-              local-dev-dashboard-token-change-me
-            </code>
+            Enter the operator dashboard access token configured for this Control Room environment.
           </p>
           <label className="field-label" htmlFor="operatorToken">Dashboard access token</label>
           <div className="token-field">
@@ -140,9 +133,14 @@ function AuthGate({ onLogin, busy, error, onHealth, health }) {
             {busy ? 'Verifying session…' : <>Enter Control Room <ArrowRight size={16} /></>}
           </button>
           <button type="button" className="subtle-button full-width" style={{ marginTop: 8 }} onClick={onHealth}>
-            <Activity size={15} /> {health ? `API ${health.status || 'reachable'} · ${health.database || 'connected'}` : 'Check backend health'}
+            <Activity size={15} /> {health ? `API ${health.status || 'reachable'}${health.database ? ` · ${health.database}` : ''}` : 'Check backend health'}
           </button>
-          <div className="login-note"><i className="signal-dot signal-amber" /> Local prototype — no official police gateway connected</div>
+          <div className="login-note">
+            <i className={cx('signal-dot', isApiConfigured() ? 'signal-amber' : 'signal-blue')} />{' '}
+            {isApiConfigured()
+              ? 'Local prototype — no official police gateway connected'
+              : 'Public preview — remote HTTPS backend pending provisioning'}
+          </div>
         </form>
       </div>
     </div>
@@ -1653,7 +1651,34 @@ export default function App() {
   const [lastUpdate, setLastUpdate] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState('overview');
+  const getInitialPage = () => {
+    if (typeof window === 'undefined') return 'overview';
+    const path = window.location.pathname.replace(/^\/+/, '').split('/')[0];
+    if (NAV.some((item) => item.id === path)) return path;
+    const hash = window.location.hash.replace(/^#\/?/, '').split('/')[0];
+    if (NAV.some((item) => item.id === hash)) return hash;
+    return 'overview';
+  };
+  const [page, setPage] = useState(getInitialPage);
+
+  const navigateTo = useCallback((nextPage) => {
+    setPage(nextPage);
+    setMobileNav(false);
+    if (typeof window !== 'undefined') {
+      const targetPath = nextPage === 'overview' ? '/' : `/${nextPage}`;
+      if (window.location.pathname !== targetPath) {
+        window.history.pushState(null, '', targetPath);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      setPage(getInitialPage());
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
   const [mobileNav, setMobileNav] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [metrics, setMetrics] = useState(null);
@@ -1740,6 +1765,15 @@ export default function App() {
   };
 
   const checkHealth = useCallback(async () => {
+    if (!isApiConfigured()) {
+      const unconfiguredState = {
+        status: 'UNCONFIGURED',
+        database: 'no remote endpoint',
+        message: 'No public HTTPS backend URL configured. Set VITE_API_BASE_URL.',
+      };
+      setHealth(unconfiguredState);
+      return unconfiguredState;
+    }
     try {
       const base = getApiBase().replace(/\/api\/v1\/?$/, '');
       const response = await fetch(`${base}/api/v1/health`);
@@ -1747,7 +1781,7 @@ export default function App() {
       setHealth(result);
       return result;
     } catch (error) {
-      setHealth({ status: 'UNREACHABLE', message: error.message });
+      setHealth({ status: 'UNREACHABLE', database: 'disconnected', message: error.message });
       return null;
     }
   }, []);
@@ -1814,10 +1848,10 @@ export default function App() {
   }, [authenticated, token, refreshData, notify]);
 
   useEffect(() => {
-    const handler = (event) => { if (NAV.some((item) => item.id === event.detail)) setPage(event.detail); };
+    const handler = (event) => { if (NAV.some((item) => item.id === event.detail)) navigateTo(event.detail); };
     window.addEventListener('raksha:goto', handler);
     return () => window.removeEventListener('raksha:goto', handler);
-  }, []);
+  }, [navigateTo]);
 
   const liveIncidents = useMemo(() => [...incidents].sort((a, b) => Number(b.reported_at) - Number(a.reported_at)), [incidents]);
   const activeFullModalIncident = fullModalIncident ? incidents.find((item) => item.event_id === fullModalIncident.event_id) || fullModalIncident : null;
@@ -1846,7 +1880,7 @@ export default function App() {
   const handleCreateReport = async (payload) => {
     setBusy(true);
     try {
-      await api.createReport(token, payload); setReportModal(false); notify('Report saved to the Raksha360 Control Room queue.'); await refreshData(true); setPage('reports');
+      await api.createReport(token, payload); setReportModal(false); notify('Report saved to the Raksha360 Control Room queue.'); await refreshData(true); navigateTo('reports');
     } catch (error) { notify(error.message, 'error'); }
     finally { setBusy(false); }
   };
@@ -1885,7 +1919,7 @@ export default function App() {
           onOpenFullDetail={setFullModalIncident}
           onStatus={handleIncidentStatus}
           onSelectReport={setSelectedReport}
-          onMap={() => setPage('map')}
+          onMap={() => navigateTo('map')}
           loading={loading}
           busy={busy}
           token={token}
@@ -1906,7 +1940,7 @@ export default function App() {
       );
     }
     if (page === 'reports') return <ReportsPage reports={reports} onSelectReport={setSelectedReport} loading={loading} onNewReport={() => setReportModal(true)} refresh={() => refreshData()} />;
-    if (page === 'devices') return <DeviceWatchPage devices={devices} loading={loading} refresh={() => refreshData()} smtpConfigured={deviceWatchMeta.smtpConfigured} offlineThresholdSeconds={deviceWatchMeta.offlineThresholdSeconds} onMap={() => setPage('map')} />;
+    if (page === 'devices') return <DeviceWatchPage devices={devices} loading={loading} refresh={() => refreshData()} smtpConfigured={deviceWatchMeta.smtpConfigured} offlineThresholdSeconds={deviceWatchMeta.offlineThresholdSeconds} onMap={() => navigateTo('map')} />;
     if (page === 'dispatch') return <DispatchPage dispatches={dispatches} onUpdateDispatch={handleUpdateDispatch} loading={loading} onSelectIncident={(partial) => { const found = incidents.find((item) => item.event_id === partial.event_id); if (found) setFullModalIncident(found); else notify('Related incident record not found.', 'error'); }} />;
     if (page === 'stations') return <StationsPage stations={stations} publicStations={publicStations} helplinesData={helplines} loading={loading} refresh={() => refreshData()} />;
     if (page === 'ncrb') return <NcrbPage ncrbData={ncrbManifest} loading={loading} refresh={() => refreshData()} />;
@@ -1950,7 +1984,7 @@ export default function App() {
         onOpenFullDetail={setFullModalIncident}
         onStatus={handleIncidentStatus}
         onSelectReport={setSelectedReport}
-        onMap={() => setPage('map')}
+        onMap={() => navigateTo('map')}
         loading={loading}
         busy={busy}
         token={token}
@@ -1989,7 +2023,7 @@ export default function App() {
                   <button
                     key={item.id}
                     className={cx('nav-item', page === item.id && 'nav-item-active')}
-                    onClick={() => { setPage(item.id); setMobileNav(false); }}
+                    onClick={() => navigateTo(item.id)}
                   >
                     <Icon size={17} />
                     <span>{item.label}</span>
@@ -2052,8 +2086,8 @@ export default function App() {
         </div>
         {renderContent()}
         <footer className="app-footer">
-          <span>RAKSHA360 CONTROL ROOM <i>•</i> LOCAL DEVELOPMENT INSTANCE</span>
-          <span><Signal tone={connected ? 'green' : 'red'} label={connected ? 'WebSocket synced' : 'Polling fallback'} /><i>•</i> DB: SQLite</span>
+          <span>RAKSHA360 CONTROL ROOM <i>•</i> {isApiConfigured() ? 'LOCAL DEVELOPMENT INSTANCE' : 'PUBLIC PREVIEW'}</span>
+          <span><Signal tone={connected ? 'green' : 'red'} label={connected ? 'WebSocket synced' : (isApiConfigured() ? 'Polling fallback' : 'Backend unconfigured')} /><i>•</i> DB: SQLite</span>
         </footer>
       </main>
 

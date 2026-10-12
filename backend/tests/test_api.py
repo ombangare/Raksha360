@@ -537,3 +537,160 @@ def test_invalid_email_domain_and_unconfigured_smtp_never_sent(client: TestClien
     })
     assert res.status_code == 200
     assert called == []
+
+
+def test_production_startup_rejection_for_default_or_missing_tokens():
+    # Production with default device token must raise RuntimeError
+    with pytest.raises(RuntimeError) as exc_info:
+        api.validate_environment_configuration(
+            env_name="production",
+            device_tok=api.KNOWN_DEV_DEVICE_TOKEN,
+            dash_tok="secure-custom-dashboard-token-12345",
+        )
+    assert "RAKSHA360_DEVICE_TOKEN" in str(exc_info.value)
+    assert "secure-custom-dashboard-token" not in str(exc_info.value)  # Credential value never disclosed
+
+    # Production with default dashboard token must raise RuntimeError
+    with pytest.raises(RuntimeError) as exc_info:
+        api.validate_environment_configuration(
+            env_name="production",
+            device_tok="secure-custom-device-token-12345",
+            dash_tok=api.KNOWN_DEV_DASHBOARD_TOKEN,
+        )
+    assert "RAKSHA360_DASHBOARD_TOKEN" in str(exc_info.value)
+    assert "secure-custom-device-token" not in str(exc_info.value)
+
+    # Production with empty tokens must raise RuntimeError
+    with pytest.raises(RuntimeError) as exc_info:
+        api.validate_environment_configuration(
+            env_name="production",
+            device_tok="",
+            dash_tok="",
+        )
+    assert "Production configuration error" in str(exc_info.value)
+
+    # Production with identical device and dashboard tokens must raise RuntimeError
+    with pytest.raises(RuntimeError) as exc_info:
+        api.validate_environment_configuration(
+            env_name="production",
+            device_tok="identical-secret-shared-between-both",
+            dash_tok="identical-secret-shared-between-both",
+        )
+    assert "must be distinct" in str(exc_info.value)
+    assert "identical-secret" not in str(exc_info.value)
+
+
+def test_production_configuration_valid_with_distinct_tokens():
+    # Production with valid, distinct, non-default tokens should not raise
+    api.validate_environment_configuration(
+        env_name="production",
+        device_tok="secure-prod-device-token-xyz-987",
+        dash_tok="secure-prod-dashboard-token-abc-456",
+    )
+
+
+def test_development_configuration_permits_dev_tokens():
+    # Development environment explicitly allows development tokens
+    api.validate_environment_configuration(
+        env_name="development",
+        device_tok=api.KNOWN_DEV_DEVICE_TOKEN,
+        dash_tok=api.KNOWN_DEV_DASHBOARD_TOKEN,
+    )
+
+
+def test_authentication_rejection_and_success(client: TestClient):
+    # Rejected device bearer token
+    res = client.post("/api/v1/device/session", headers={"Authorization": "Bearer invalid-wrong-token"})
+    assert res.status_code == 401
+    assert "valid Raksha360 device bearer token" in res.json()["detail"]
+
+    # Rejected dashboard session
+    res = client.post("/api/v1/dashboard/session", json={"token": "invalid-dashboard-token"})
+    assert res.status_code == 401
+    assert "Invalid dashboard token" in res.json()["detail"]
+
+    # Rejected dashboard REST route with wrong header
+    res = client.get("/api/v1/incidents", headers={"X-Dashboard-Token": "invalid-dashboard-token"})
+    assert res.status_code == 401
+
+    # Successful dashboard session
+    res = client.post("/api/v1/dashboard/session", json={"token": "test-dashboard-token"})
+    assert res.status_code == 200
+    assert res.json()["authenticated"] is True
+
+    # Successful device session
+    res = client.post("/api/v1/device/session", headers={"Authorization": "Bearer test-device-token"})
+    assert res.status_code == 200
+    assert res.json()["authenticated"] is True
+
+
+def test_websocket_frame_authentication_without_query_token(client: TestClient):
+    # Connect without query param, authenticate via initial frame
+    with client.websocket_connect("/ws/police") as websocket:
+        websocket.send_json({"type": "AUTH", "token": "test-dashboard-token"})
+        connected = websocket.receive_json()
+        assert connected["type"] in ("AUTHENTICATED", "CONNECTED")
+
+
+def test_fixture_cleanup_preserves_operational_records_with_demo_session(tmp_path: Path):
+    import scripts.import_raksha360_fixtures as fixture_importer
+
+    test_db = tmp_path / "test-cleanup.sqlite3"
+    conn = fixture_importer.get_connection(test_db)
+    fixture_importer.ensure_schema(conn, test_db)
+
+    # 1. Seed demo fixtures (all marked is_demo = 1)
+    seeded = fixture_importer.import_demo_fixtures(conn)
+    assert seeded["incidents"] > 0
+
+    # 2. Insert a real operational incident (is_demo = 0) that happens to reference a demo session id
+    # (like the offline evaluation incident OFFLINE-CD825E3545-1791724506522)
+    now_ms = fixture_importer.utc_ms()
+    conn.execute(
+        """INSERT INTO incidents (
+            event_id, reported_at, updated_at, trigger_type, severity, status, latitude, longitude,
+            accuracy_meters, location_description, device_session_id, is_demo, details_json
+        ) VALUES (
+            'OFFLINE-CD825E3545-1791724506522', ?, ?, 'DEVICE_OFFLINE', 'High', 'New',
+            21.1458, 79.0882, 10.0, 'Operational location', 'DEMO-DEVICE-ONLINE-001', 0, '{"note": "Real alert"}'
+        )""",
+        (now_ms, now_ms),
+    )
+
+    # Also insert an operational device record
+    conn.execute(
+        """INSERT OR REPLACE INTO device_status (
+            device_id, last_seen_at, last_latitude, last_longitude, last_accuracy_meters,
+            last_location_at, last_battery_pct, monitoring_enabled, offline_location_email_consent,
+            status, created_at, updated_at
+        ) VALUES (
+            'DEMO-DEVICE-ONLINE-001', ?, 21.1458, 79.0882, 10.0, ?, 85, 1, 1, 'ARMED', ?, ?
+        )""",
+        (now_ms, now_ms, now_ms, now_ms),
+    )
+    conn.commit()
+
+    # 3. Execute cleanup
+    deleted = fixture_importer.clear_demo_fixtures(conn, dry_run=False)
+
+    # 4. Verify that demo incidents were deleted
+    remaining_demo_incidents = conn.execute("SELECT COUNT(*) FROM incidents WHERE is_demo = 1").fetchone()[0]
+    assert remaining_demo_incidents == 0
+
+    # 5. Verify that operational incident with is_demo = 0 was strictly preserved
+    operational_incident = conn.execute(
+        "SELECT event_id, device_session_id, is_demo FROM incidents WHERE event_id = 'OFFLINE-CD825E3545-1791724506522'"
+    ).fetchone()
+    assert operational_incident is not None
+    assert operational_incident["event_id"] == "OFFLINE-CD825E3545-1791724506522"
+    assert operational_incident["device_session_id"] == "DEMO-DEVICE-ONLINE-001"
+    assert operational_incident["is_demo"] == 0
+
+    # 6. Verify that the device linked to this operational incident was also preserved
+    preserved_device = conn.execute(
+        "SELECT device_id FROM device_status WHERE device_id = 'DEMO-DEVICE-ONLINE-001'"
+    ).fetchone()
+    assert preserved_device is not None
+
+    conn.close()
+

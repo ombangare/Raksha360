@@ -27,8 +27,52 @@ load_dotenv(ROOT_DIR.parent / ".env")
 DATA_DIR = Path(os.getenv("RAKSHA360_DATA_DIR", str(ROOT_DIR / "data"))).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = Path(os.getenv("RAKSHA360_DATABASE_PATH", str(DATA_DIR / "raksha360.sqlite3"))).resolve()
-DEVICE_TOKEN = os.getenv("RAKSHA360_DEVICE_TOKEN", "local-dev-device-token-change-me")
-DASHBOARD_TOKEN = os.getenv("RAKSHA360_DASHBOARD_TOKEN", "local-dev-dashboard-token-change-me")
+
+KNOWN_DEV_DEVICE_TOKEN = "local-dev-device-token-change-me"
+KNOWN_DEV_DASHBOARD_TOKEN = "local-dev-dashboard-token-change-me"
+
+def get_configured_tokens() -> tuple[str, str]:
+    """Retrieve device and dashboard tokens, respecting development defaults when permitted."""
+    d_tok = os.getenv("RAKSHA360_DEVICE_TOKEN", KNOWN_DEV_DEVICE_TOKEN)
+    b_tok = os.getenv("RAKSHA360_DASHBOARD_TOKEN", KNOWN_DEV_DASHBOARD_TOKEN)
+    return d_tok, b_tok
+
+DEVICE_TOKEN, DASHBOARD_TOKEN = get_configured_tokens()
+
+def validate_environment_configuration(
+    env_name: str | None = None,
+    device_tok: str | None = None,
+    dash_tok: str | None = None,
+) -> None:
+    """
+    Fail-fast guard ensuring production-like configurations never silently use placeholder or missing credentials.
+    Error messages intentionally omit credential values to prevent log leaks.
+    """
+    env = (env_name if env_name is not None else os.getenv("RAKSHA360_ENV", os.getenv("ENVIRONMENT", "development"))).strip().lower()
+    d_tok = device_tok if device_tok is not None else os.getenv("RAKSHA360_DEVICE_TOKEN", DEVICE_TOKEN)
+    b_tok = dash_tok if dash_tok is not None else os.getenv("RAKSHA360_DASHBOARD_TOKEN", DASHBOARD_TOKEN)
+    
+    allow_dev_tokens = os.getenv(
+        "RAKSHA360_ALLOW_DEV_TOKENS",
+        "true" if env in ("development", "dev", "test", "testing", "local") else "false"
+    ).strip().lower() in ("true", "1", "yes")
+
+    is_production = env in ("production", "prod", "staging") or not allow_dev_tokens
+
+    if is_production:
+        if not d_tok or d_tok == KNOWN_DEV_DEVICE_TOKEN:
+            raise RuntimeError(
+                "Production configuration error: In production environment, RAKSHA360_DEVICE_TOKEN must be explicitly set to a secure, non-default secret."
+            )
+        if not b_tok or b_tok == KNOWN_DEV_DASHBOARD_TOKEN:
+            raise RuntimeError(
+                "Production configuration error: In production environment, RAKSHA360_DASHBOARD_TOKEN must be explicitly set to a secure, non-default secret."
+            )
+        if d_tok == b_tok:
+            raise RuntimeError(
+                "Production configuration error: RAKSHA360_DEVICE_TOKEN and RAKSHA360_DASHBOARD_TOKEN must be distinct credentials in production environment."
+            )
+
 CORS_ORIGINS = [item.strip() for item in os.getenv("RAKSHA360_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if item.strip()]
 APP_VERSION = "1.3.0-local"
 OFFLINE_THRESHOLD_DEFAULT_SECONDS = 180
@@ -40,6 +84,7 @@ offline_monitor_task: asyncio.Task | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global offline_monitor_task
+    validate_environment_configuration()
     initialize_database()
     if offline_monitor_task is None or offline_monitor_task.done():
         offline_monitor_task = asyncio.create_task(offline_monitor_loop())
@@ -1507,10 +1552,35 @@ def get_audit_log(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, An
 
 @app.websocket("/ws/police")
 async def police_websocket(websocket: WebSocket, token: str = Query(default="")) -> None:
-    if not constant_time_token_match(token, DASHBOARD_TOKEN):
-        await websocket.close(code=1008, reason="Dashboard token required")
-        return
-    await manager.connect(websocket)
+    already_accepted = False
+    if token:
+        if not constant_time_token_match(token, DASHBOARD_TOKEN):
+            await websocket.close(code=1008, reason="Dashboard token required")
+            return
+        env = os.getenv("RAKSHA360_ENV", os.getenv("ENVIRONMENT", "development")).strip().lower()
+        if env in ("production", "prod", "staging"):
+            print("SECURITY AUDIT: WebSocket token passed via URL query parameter; consider migrating to post-connect AUTH frame to avoid proxy access log exposure.")
+    else:
+        # Prevent token leakage in URL access logs: allow connecting without query param and authenticating via initial frame
+        await websocket.accept()
+        already_accepted = True
+        try:
+            raw_msg = await asyncio.wait_for(websocket.receive_text(), timeout=5.0)
+            data = json.loads(raw_msg)
+            if not (data.get("type") == "AUTH" and constant_time_token_match(data.get("token"), DASHBOARD_TOKEN)):
+                await websocket.close(code=1008, reason="Dashboard token required")
+                return
+        except Exception:
+            await websocket.close(code=1008, reason="Dashboard token required")
+            return
+
+    if already_accepted:
+        async with manager.lock:
+            manager.connections.add(websocket)
+        await websocket.send_json({"type": "CONNECTED", "data": {"at": now_iso(), "service": "Raksha360 Control Room"}})
+    else:
+        await manager.connect(websocket)
+
     try:
         while True:
             # Keep the connection alive and allow client ping/diagnostics; the server does not treat client messages as incidents.

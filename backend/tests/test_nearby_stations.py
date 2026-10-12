@@ -228,8 +228,39 @@ def test_different_incidents_return_distinct_rankings(client: TestClient):
 
     resp1 = client.get(f"/api/v1/incidents/{evt1}/nearby-stations", headers=dashboard).json()
     resp2 = client.get(f"/api/v1/incidents/{evt2}/nearby-stations", headers=dashboard).json()
-
     # Closest station for Incident 1 is Sitabuldi
     assert resp1["stations"][0]["stationId"] == "TEST-STA-A"
     # Closest station for Incident 2 is Ambazari
     assert resp2["stations"][0]["stationId"] == "TEST-STA-B"
+
+
+def test_unverified_coordinates_never_labelled_human_verified(client: TestClient):
+    dashboard = {"X-Dashboard-Token": "test-dashboard-token"}
+    device = {"Authorization": "Bearer test-device-token"}
+
+    with api.db() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO police_station_directory (
+                station_id, name, name_mr, phone, email, address, jurisdiction_label,
+                latitude, longitude, coordinates_verified, coordinate_source, coordinate_status,
+                osm_type, osm_id, source_url, source_page_last_updated, retrieved_on, data_class, updated_at
+            ) VALUES
+            ('STA-CANDIDATE-ONLY', 'Candidate Station', 'उमेदवार ठाणे', '0712-2561199', 'cand@police.example', 'Nagpur', 'Zone',
+             21.1470, 79.0840, 0, 'Candidate geocoded', 'UNVERIFIED_CANDIDATE', NULL, NULL, 'https://example.com', '2026-08', '2026-10-11', 'OFFICIAL_PUBLIC_DIRECTORY', '2026-10-12'),
+            ('STA-FAKE-VERIFIED-ID', 'Pseudo Verified ID Station', 'खोटे ठाणे', '0712-2561188', 'pseudo@police.example', 'Nagpur', 'Zone',
+             21.1472, 79.0842, 0, 'Script candidate', 'UNVERIFIED_CANDIDATE', NULL, 'fake_ps_verified', 'https://example.com', '2026-08', '2026-10-12', 'OFFICIAL_PUBLIC_DIRECTORY', '2026-10-12')"""
+        )
+
+    evt = "INC-TEST-PROVENANCE-001"
+    client.post("/api/v1/emergency-events", headers=device, json={
+        "eventId": evt, "triggerType": "PANIC_BUTTON",
+        "latitude": 21.1466, "longitude": 79.0833, "isDemoMode": False,
+    })
+
+    resp = client.get(f"/api/v1/incidents/{evt}/nearby-stations?radius_km=5", headers=dashboard).json()
+    stations = resp.get("stations", [])
+    for s in stations:
+        if s["stationId"] in ("STA-CANDIDATE-ONLY", "STA-FAKE-VERIFIED-ID"):
+            assert s["coordinateStatus"] != "HUMAN_VERIFIED_COORDINATE"
+            assert s["coordinatesVerified"] is False
+            assert s["coordinateStatus"] == "UNVERIFIED_CANDIDATE"

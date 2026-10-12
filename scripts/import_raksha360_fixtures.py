@@ -336,21 +336,47 @@ def get_table_counts(conn: sqlite3.Connection) -> dict[str, int]:
 
 
 def clear_demo_fixtures(conn: sqlite3.Connection, dry_run: bool = False) -> dict[str, int]:
-    """Delete all synthetic demo rows transactionally while preserving real user and reference records."""
+    """
+    Safely delete synthetic demo rows transactionally while strictly preserving real operational
+    and reference records. Demo-looking session IDs or JSON fields alone NEVER authorize deletion
+    of an operational (is_demo = 0) record.
+    """
     now = utc_ms()
     before_counts = get_table_counts(conn)
     deleted_counts = {}
 
+    # 1. Identify and report ambiguous records (is_demo = 0 but possessing demo-like markers)
+    ambiguous_records = {
+        "incidents": [r[0] for r in conn.execute(
+            "SELECT event_id FROM incidents WHERE is_demo = 0 AND (event_id LIKE 'DEMO-%' OR device_session_id LIKE 'DEMO-%' OR details_json LIKE '%DEMO-%')"
+        ).fetchall()],
+        "reports": [r[0] for r in conn.execute(
+            "SELECT report_id FROM reports WHERE is_demo = 0 AND report_id LIKE 'DEMO-%'"
+        ).fetchall()],
+        "dispatches": [r[0] for r in conn.execute(
+            "SELECT dispatch_id FROM dispatches WHERE is_demo = 0 AND dispatch_id LIKE 'DEMO-%'"
+        ).fetchall()],
+        "stations": [r[0] for r in conn.execute(
+            "SELECT station_id FROM stations WHERE is_demo = 0 AND (station_id LIKE 'DEMO-%' OR station_id LIKE 'STATION-DEMO-%')"
+        ).fetchall()],
+    }
+
+    for table_name, record_ids in ambiguous_records.items():
+        if record_ids:
+            print(f"[DATA INTEGRITY GUARD] Preserving {len(record_ids)} ambiguous records in '{table_name}' with is_demo=0: {record_ids}")
+
+    # 2. Strict cleanup queries requiring explicit demo provenance (is_demo = 1).
+    # Operational devices linked to an is_demo=0 incident are never touched.
     queries = [
-        ("location_updates", "DELETE FROM location_updates WHERE event_id IN (SELECT event_id FROM incidents WHERE is_demo = 1 OR event_id LIKE 'DEMO-%' OR device_session_id LIKE 'DEMO-%')"),
-        ("dispatches", "DELETE FROM dispatches WHERE is_demo = 1 OR dispatch_id LIKE 'DEMO-%'"),
-        ("reports", "DELETE FROM reports WHERE is_demo = 1 OR report_id LIKE 'DEMO-%'"),
-        ("incidents", "DELETE FROM incidents WHERE is_demo = 1 OR event_id LIKE 'DEMO-%' OR device_session_id LIKE 'DEMO-%' OR details_json LIKE '%DEMO-%'"),
-        ("stations", "DELETE FROM stations WHERE is_demo = 1 OR station_id LIKE 'DEMO-%' OR station_id LIKE 'STATION-DEMO-%'"),
-        ("offline_email_deliveries", "DELETE FROM offline_email_deliveries WHERE device_id LIKE 'DEMO-%' OR incident_id LIKE 'DEMO-%'"),
-        ("emergency_contacts", "DELETE FROM emergency_contacts WHERE device_id LIKE 'DEMO-%'"),
-        ("device_status", "DELETE FROM device_status WHERE device_id LIKE 'DEMO-%'"),
-        ("audit_log", "DELETE FROM audit_log WHERE is_demo = 1 OR target_id = 'DEMO_PACK' OR actor = 'CLI_IMPORTER'"),
+        ("location_updates", "DELETE FROM location_updates WHERE event_id IN (SELECT event_id FROM incidents WHERE is_demo = 1)"),
+        ("dispatches", "DELETE FROM dispatches WHERE is_demo = 1"),
+        ("reports", "DELETE FROM reports WHERE is_demo = 1"),
+        ("incidents", "DELETE FROM incidents WHERE is_demo = 1"),
+        ("stations", "DELETE FROM stations WHERE is_demo = 1"),
+        ("offline_email_deliveries", "DELETE FROM offline_email_deliveries WHERE incident_id IN (SELECT event_id FROM incidents WHERE is_demo = 1) OR (device_id LIKE 'DEMO-%' AND device_id NOT IN (SELECT DISTINCT device_session_id FROM incidents WHERE is_demo = 0 AND device_session_id IS NOT NULL))"),
+        ("emergency_contacts", "DELETE FROM emergency_contacts WHERE device_id LIKE 'DEMO-%' AND device_id NOT IN (SELECT DISTINCT device_session_id FROM incidents WHERE is_demo = 0 AND device_session_id IS NOT NULL)"),
+        ("device_status", "DELETE FROM device_status WHERE device_id LIKE 'DEMO-%' AND device_id NOT IN (SELECT DISTINCT device_session_id FROM incidents WHERE is_demo = 0 AND device_session_id IS NOT NULL)"),
+        ("audit_log", "DELETE FROM audit_log WHERE is_demo = 1"),
     ]
 
     try:
