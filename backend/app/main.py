@@ -109,15 +109,14 @@ def validate_environment_configuration(
                 "Production configuration error: Wildcard '*' in RAKSHA360_CORS_ORIGINS is prohibited in production. Explicit origins are required."
             )
         raw_db = db_url_raw if db_url_raw is not None else get_database_url()
-        if db_url_raw is not None or os.getenv("RAKSHA360_REQUIRE_DATABASE_URL", "false").lower() == "true":
-            if not raw_db.strip():
-                raise RuntimeError(
-                    "Production configuration error: In production environment, DATABASE_URL must be explicitly configured with your Supabase PostgreSQL connection string."
-                )
-            if not (raw_db.startswith("postgres://") or raw_db.startswith("postgresql://")):
-                raise RuntimeError(
-                    "Production configuration error: DATABASE_URL must be a valid PostgreSQL connection string."
-                )
+        if not raw_db.strip():
+            raise RuntimeError(
+                "Production configuration error: In production environment, DATABASE_URL must be explicitly configured with your Supabase PostgreSQL connection string."
+            )
+        if not (raw_db.startswith("postgres://") or raw_db.startswith("postgresql://")):
+            raise RuntimeError(
+                "Production configuration error: DATABASE_URL must be a valid PostgreSQL connection string (starting with postgresql:// or postgres://)."
+            )
 
 CORS_ORIGINS = get_cors_origins()
 APP_VERSION = "1.3.0-local"
@@ -387,11 +386,11 @@ def initialize_database() -> None:
             CREATE INDEX IF NOT EXISTS idx_offline_email_delivery_episode
                 ON offline_email_deliveries(device_id, incident_id, status);
             """
-        )
-        try:
-            conn.execute("ALTER TABLE police_station_directory ADD COLUMN coordinate_status TEXT DEFAULT 'OFFICIAL_ADDRESS_ONLY'")
-        except sqlite3.OperationalError:
-            pass
+            )
+            try:
+                conn.execute("ALTER TABLE police_station_directory ADD COLUMN coordinate_status TEXT DEFAULT 'OFFICIAL_ADDRESS_ONLY'")
+            except sqlite3.OperationalError:
+                pass
         # Public station directory is a separate reference dataset, not live dispatch status.
         # Seed from the checked-in public snapshot; preserve any manually reviewed coordinates.
         directory_path = ROOT_DIR.parent / "reference-data" / "nagpur-public" / "nagpur_police_stations.json"
@@ -414,7 +413,7 @@ def initialize_database() -> None:
                                jurisdiction_label=excluded.jurisdiction_label,
                                latitude=COALESCE(police_station_directory.latitude, excluded.latitude),
                                longitude=COALESCE(police_station_directory.longitude, excluded.longitude),
-                               coordinates_verified=MAX(police_station_directory.coordinates_verified, excluded.coordinates_verified),
+                               coordinates_verified=(CASE WHEN police_station_directory.coordinates_verified = 1 OR excluded.coordinates_verified = 1 THEN 1 ELSE 0 END),
                                coordinate_source=COALESCE(police_station_directory.coordinate_source, excluded.coordinate_source),
                                coordinate_checked_at=COALESCE(police_station_directory.coordinate_checked_at, excluded.coordinate_checked_at),
                                coordinate_status=COALESCE(police_station_directory.coordinate_status, excluded.coordinate_status),

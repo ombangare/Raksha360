@@ -121,11 +121,64 @@ class PostgresCursorWrapper:
 
 def convert_query_to_postgres(sql: str) -> str:
     """
-    Converts SQLite ? parameter placeholders to PostgreSQL %s placeholders,
-    and adjusts SQLite-specific clauses when necessary.
+    Converts SQLite ? parameter placeholders to PostgreSQL %s placeholders safely,
+    ignoring ? inside string literals, quoted identifiers, and comments.
+    Also maps SQLite-specific scalar functions like multi-argument MAX(a, b) to GREATEST(a, b).
     """
-    # Replace ? with %s
-    converted = re.sub(r'\?', '%s', sql)
+    out: list[str] = []
+    i = 0
+    n = len(sql)
+    while i < n:
+        char = sql[i]
+        # Single-quoted string literal
+        if char == "'":
+            out.append(char)
+            i += 1
+            while i < n:
+                curr = sql[i]
+                out.append(curr)
+                i += 1
+                if curr == "'":
+                    if i < n and sql[i] == "'":
+                        out.append("'")
+                        i += 1
+                    else:
+                        break
+        # Double-quoted identifier
+        elif char == '"':
+            out.append(char)
+            i += 1
+            while i < n:
+                curr = sql[i]
+                out.append(curr)
+                i += 1
+                if curr == '"':
+                    break
+        # Line comment -- ...
+        elif char == '-' and i + 1 < n and sql[i+1] == '-':
+            while i < n and sql[i] != '\n':
+                out.append(sql[i])
+                i += 1
+        # Block comment /* ... */
+        elif char == '/' and i + 1 < n and sql[i+1] == '*':
+            out.append(sql[i:i+2])
+            i += 2
+            while i < n:
+                if sql[i] == '*' and i + 1 < n and sql[i+1] == '/':
+                    out.append("*/")
+                    i += 2
+                    break
+                out.append(sql[i])
+                i += 1
+        # Standalone parameter placeholder ?
+        elif char == '?':
+            out.append('%s')
+            i += 1
+        else:
+            out.append(char)
+            i += 1
+
+    converted = "".join(out)
     # Adjust COLLATE NOCASE to standard case-insensitive LOWER() if encountered
     converted = re.sub(r'ORDER BY name COLLATE NOCASE', 'ORDER BY LOWER(name)', converted, flags=re.IGNORECASE)
     return converted

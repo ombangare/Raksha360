@@ -607,12 +607,13 @@ def test_production_startup_rejection_for_wildcard_or_missing_cors():
 
 
 def test_production_configuration_valid_with_distinct_tokens():
-    # Production with valid, distinct, non-default tokens and valid CORS should not raise
+    # Production with valid, distinct, non-default tokens, valid CORS, and valid DATABASE_URL should not raise
     api.validate_environment_configuration(
         env_name="production",
         device_tok="secure-prod-device-token-xyz-987",
         dash_tok="secure-prod-dashboard-token-abc-456",
-        cors_raw="https://raksha360.vercel.app",
+        cors_raw="https://raksha360-policedashboard.vercel.app",
+        db_url_raw="postgresql://postgres:secret@aws-0.pooler.supabase.com:5432/postgres",
     )
 
 
@@ -855,6 +856,40 @@ def test_healthcheck_reports_active_database_engine(client: TestClient):
     data = res.json()
     assert data["status"] == "ONLINE"
     assert data["database"] in ("sqlite", "postgresql")
+
+
+def test_production_startup_fails_when_database_url_is_missing_regardless_of_optional_flags(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("RAKSHA360_REQUIRE_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with pytest.raises(RuntimeError) as exc_info:
+        api.validate_environment_configuration(
+            env_name="production",
+            device_tok="secure-prod-device-token-xyz-987",
+            dash_tok="secure-prod-dashboard-token-abc-456",
+            cors_raw="https://raksha360-policedashboard.vercel.app",
+        )
+    assert "DATABASE_URL" in str(exc_info.value)
+
+
+def test_station_upsert_preserves_verified_coordinates_on_portable_syntax():
+    # Simulate a human-verified coordinate in Nagpur
+    with api.db() as conn:
+        conn.execute(
+            """UPDATE police_station_directory
+               SET latitude = 21.1458, longitude = 79.0882, coordinates_verified = 1,
+                   coordinate_source = 'HUMAN_VERIFIED_REVIEW'
+               WHERE station_id = 'NGP-SITABULDI'"""
+        )
+
+    # Re-running initialize_database must preserve the verified status and coordinates
+    api.initialize_database()
+
+    with api.db() as conn:
+        row = conn.execute("SELECT * FROM police_station_directory WHERE station_id = 'NGP-SITABULDI'").fetchone()
+        assert row["coordinates_verified"] == 1 or row["coordinates_verified"] is True
+        assert row["latitude"] == 21.1458
+        assert row["longitude"] == 79.0882
+
 
 
 
