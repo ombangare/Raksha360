@@ -43,10 +43,32 @@ def get_sqlite_path() -> Path:
     return Path(os.getenv("RAKSHA360_DATABASE_PATH", str(DB_PATH))).resolve()
 
 
+def get_pg_schema() -> str:
+    """Return the configured PostgreSQL search_path schema, if any."""
+    schema = os.getenv("RAKSHA360_PG_SCHEMA", "").strip()
+    if schema:
+        if not re.match(r'^[a-zA-Z0-9_]+$', schema):
+            raise ValueError(f"Invalid RAKSHA360_PG_SCHEMA name: {schema}")
+    return schema
+
+
+def _configure_pg_connection(conn: Any) -> None:
+    """Configure each connection created by the connection pool to use the isolated schema and UTF-8 encoding."""
+    schema = get_pg_schema()
+    if schema:
+        conn.execute(f'SET search_path TO "{schema}", public')
+    conn.execute("SET client_encoding TO 'UTF8'")
+    conn.commit()
+
+
 def get_database_url() -> str:
     url = os.getenv("DATABASE_URL", "").strip()
     if url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://"):]
+    schema = get_pg_schema()
+    if schema and url and "search_path" not in url:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}options=-c%20search_path%3D{schema},public"
     return url
 
 
@@ -236,6 +258,7 @@ def get_db_pool() -> Any:
             timeout=10.0,
             max_idle=300.0,
             open=True,
+            configure=_configure_pg_connection,
         )
     return _pg_pool
 
