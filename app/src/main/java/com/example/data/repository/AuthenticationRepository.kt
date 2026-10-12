@@ -44,8 +44,7 @@ class AuthenticationRepository(
     private val context: Context,
     private val backendClient: BackendApiClient,
     private val auditLogger: IAuditLoggerService,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val injectedCredentialManager: CredentialManager? = null
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) {
     companion object {
         private const val TAG = "AuthRepository"
@@ -65,7 +64,7 @@ class AuthenticationRepository(
 
     private val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val credentialManager: CredentialManager by lazy {
-        injectedCredentialManager ?: CredentialManager.create(context)
+        CredentialManager.create(context)
     }
 
     private val _authState = MutableStateFlow<AuthState>(AuthState.Initializing)
@@ -212,10 +211,16 @@ class AuthenticationRepository(
      * Signs out the user, clears Credential Manager state, and wipes local session.
      */
     suspend fun signOut(): Unit = withContext(ioDispatcher) {
-        try {
-            credentialManager.clearCredentialState(ClearCredentialStateRequest())
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed clearing CredentialManager state: ${e.message}")
+        val uid = prefs.getString(KEY_UID, null)
+        val isDemo = prefs.getBoolean(KEY_IS_DEMO, false)
+        if (!uid.isNullOrEmpty() && !isDemo) {
+            try {
+                kotlinx.coroutines.withTimeoutOrNull(1000) {
+                    credentialManager.clearCredentialState(ClearCredentialStateRequest())
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed clearing CredentialManager state: ${e.message}")
+            }
         }
 
         val previousEmail = prefs.getString(KEY_EMAIL, "unknown")

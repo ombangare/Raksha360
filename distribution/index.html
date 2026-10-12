@@ -241,30 +241,14 @@
       <p class="download-note">Signed with stable project key &bull; Updates overwrite cleanly</p>
 
       <div class="qr-section">
-        <div class="qr-box">
-          <svg width="120" height="120" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-            <!-- Stylized QR Code placeholder pointing to installation URL -->
-            <rect width="100" height="100" fill="white"/>
-            <rect x="10" y="10" width="25" height="25" fill="black"/>
-            <rect x="15" y="15" width="15" height="15" fill="white"/>
-            <rect x="18" y="18" width="9" height="9" fill="black"/>
-            <rect x="65" y="10" width="25" height="25" fill="black"/>
-            <rect x="70" y="15" width="15" height="15" fill="white"/>
-            <rect x="73" y="18" width="9" height="9" fill="black"/>
-            <rect x="10" y="65" width="25" height="25" fill="black"/>
-            <rect x="15" y="70" width="15" height="15" fill="white"/>
-            <rect x="18" y="73" width="9" height="9" fill="black"/>
-            <rect x="42" y="12" width="6" height="6" fill="black"/>
-            <rect x="52" y="18" width="6" height="6" fill="black"/>
-            <rect x="42" y="28" width="6" height="6" fill="black"/>
-            <rect x="48" y="42" width="12" height="12" fill="#2563EB"/>
-            <rect x="68" y="45" width="6" height="6" fill="black"/>
-            <rect x="45" y="68" width="8" height="8" fill="black"/>
-            <rect x="62" y="65" width="10" height="6" fill="black"/>
-            <rect x="75" y="75" width="12" height="12" fill="black"/>
-          </svg>
+        <div style="background: rgba(37, 99, 235, 0.1); border: 1px dashed rgba(37, 99, 235, 0.4); border-radius: 12px; padding: 14px 18px; width: 100%; text-align: center;">
+          <p style="font-size: 13px; font-weight: 600; color: #93C5FD; margin-bottom: 4px;">Release Asset Hosting Notice</p>
+          <p style="font-size: 12px; color: var(--text-muted); line-height: 1.4;">
+            The release APK (~111 MB) contains on-device offline voice recognition models and universal ABIs.
+            Release binaries are published via <a href="https://github.com/ombangare/Raksha360/releases" target="_blank" rel="noopener noreferrer" style="color: #60A5FA; text-decoration: underline;">GitHub Releases</a>.
+            Scannable QR codes are generated directly from the permanent release asset URL upon GitHub Release publication.
+          </p>
         </div>
-        <span class="qr-label">Scan from your mobile device to open download</span>
       </div>
     </div>
 
@@ -274,7 +258,7 @@
         Package Integrity & SHA-256 Checksum
       </div>
       <div class="hash-box">
-        <span id="sha256Hash">24ee61a5cba17041b40a5ec76e5083f3491ccdc9146471e2cc2ed742b6c0ee23</span>
+        <span id="sha256Hash">bd2b74d3beeb62873952010102240a5efca91eb61485d04aca06c75348e29865</span>
         <button class="copy-btn" onclick="copyHash()">Copy</button>
       </div>
       <p style="font-size: 11px; color: var(--text-muted); margin-top: 6px;">

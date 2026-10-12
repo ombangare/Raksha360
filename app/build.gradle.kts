@@ -20,6 +20,8 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    buildConfigField("String", "DEFAULT_API_BASE_URL", "\"https://raksha360-api.onrender.com/api/v1\"")
+    buildConfigField("Boolean", "IS_PRODUCTION", "true")
   }
 
   signingConfigs {
@@ -50,8 +52,14 @@ android {
       if (relConfig.storeFile?.exists() == true && !relConfig.storePassword.isNullOrBlank()) {
         signingConfig = relConfig
       }
+      buildConfigField("String", "DEFAULT_API_BASE_URL", "\"https://raksha360-api.onrender.com/api/v1\"")
+      buildConfigField("Boolean", "IS_PRODUCTION", "true")
     }
-    debug { signingConfig = signingConfigs.getByName("debugConfig") }
+    debug {
+      signingConfig = signingConfigs.getByName("debugConfig")
+      buildConfigField("String", "DEFAULT_API_BASE_URL", "\"http://10.0.2.2:4000/api/v1\"")
+      buildConfigField("Boolean", "IS_PRODUCTION", "false")
+    }
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
@@ -61,7 +69,14 @@ android {
     compose = true
     buildConfig = true
   }
-  testOptions { unitTests { isIncludeAndroidResources = true } }
+  testOptions {
+    unitTests {
+      isIncludeAndroidResources = true
+      all {
+        it.forkEvery = 1
+      }
+    }
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true

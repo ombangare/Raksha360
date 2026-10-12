@@ -116,32 +116,37 @@ class BackendApiClient(
 
     /** Tests both the backend health route and the authenticated Android-device route. */
     suspend fun testConnection(baseUrl: String, token: String): Result<String> = withContext(Dispatchers.IO) {
-        val normalized = baseUrl.trim().trimEnd('/')
-        if (!(normalized.startsWith("http://") || normalized.startsWith("https://"))) {
+        val trimmed = baseUrl.trim().trimEnd('/')
+        if (!(trimmed.startsWith("http://") || trimmed.startsWith("https://"))) {
             return@withContext Result.failure(IOException("URL must start with http:// or https://."))
         }
-        if (token.isBlank()) return@withContext Result.failure(IOException("Enter the device token from the backend .env file."))
+        val normalized = if (trimmed.endsWith("/api/v1")) trimmed else "$trimmed/api/v1"
+        if (com.example.BuildConfig.IS_PRODUCTION && normalized.startsWith("http://")
+            && !normalized.contains("10.0.2.2") && !normalized.contains("localhost") && !normalized.contains("127.0.0.1")) {
+            return@withContext Result.failure(IOException("Production API requires secure HTTPS. Cleartext HTTP is not permitted for remote connections."))
+        }
+        if (token.isBlank()) return@withContext Result.failure(IOException("Enter the authorized device token."))
         try {
             val healthRequest = Request.Builder().url("$normalized/health").get().build()
             val healthResponse = okHttpClient.newCall(healthRequest).execute()
             val healthBody = healthResponse.body?.string().orEmpty()
-            if (!healthResponse.isSuccessful) return@withContext Result.failure(IOException("Health check failed: HTTP ${healthResponse.code}. $healthBody"))
+            if (!healthResponse.isSuccessful) return@withContext Result.failure(IOException("Health check failed (HTTP ${healthResponse.code}): ${healthBody.take(120)}"))
             val healthJson = JSONObject(healthBody)
             val sessionRequest = Request.Builder()
                 .url("$normalized/device/session")
-                .header("Authorization", "Bearer $token")
+                .header("Authorization", "Bearer ${token.trim()}")
                 .post("{}".toRequestBody(jsonMedia))
                 .build()
             val sessionResponse = okHttpClient.newCall(sessionRequest).execute()
             val sessionBody = sessionResponse.body?.string().orEmpty()
             if (!sessionResponse.isSuccessful) {
-                return@withContext Result.failure(IOException("Health is reachable but device authentication failed (HTTP ${sessionResponse.code}). Check the device token."))
+                return@withContext Result.failure(IOException("Health check reachable but device authentication rejected (HTTP ${sessionResponse.code}). Verify device token."))
             }
             val sessionJson = JSONObject(sessionBody)
-            if (!sessionJson.optBoolean("authenticated", false)) return@withContext Result.failure(IOException("The backend did not confirm device authentication."))
-            Result.success("Connected to ${healthJson.optString("service", "Raksha360 backend")} · ${healthJson.optString("database", "database available")}")
+            if (!sessionJson.optBoolean("authenticated", false)) return@withContext Result.failure(IOException("Backend did not confirm device authentication."))
+            Result.success("Connected to ${healthJson.optString("service", "Raksha360 backend")} · Database: ${healthJson.optString("database", "online")}")
         } catch (e: Exception) {
-            Result.failure(IOException("Cannot reach local backend. Check laptop IP, Wi-Fi, firewall, URL, and server status. ${e.message ?: ""}"))
+            Result.failure(IOException("Cannot reach backend at $normalized: ${e.localizedMessage ?: "Connection failed"}"))
         }
     }
 
@@ -188,13 +193,8 @@ class BackendApiClient(
         withContext(Dispatchers.IO) {
             val config = getApiConfig()
 
-            if (!isOnline()) {
-                return@withContext Result.failure(IOException("No network connection available (Offline)"))
-            }
-
             if (config.isDemoMode || !config.isConfigured) {
                 // Local simulation for demo mode / testing
-                delay(600)
                 val ticket = "DEMO-TKT-" + UUID.randomUUID().toString().take(8).uppercase()
                 return@withContext Result.success(
                     EmergencyEventResponse(
@@ -204,6 +204,10 @@ class BackendApiClient(
                         serverTimestamp = System.currentTimeMillis()
                     )
                 )
+            }
+
+            if (!isOnline()) {
+                return@withContext Result.failure(IOException("No network connection available (Offline)"))
             }
 
             try {

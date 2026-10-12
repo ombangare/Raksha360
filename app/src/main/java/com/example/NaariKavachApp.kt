@@ -138,8 +138,12 @@ class NaariKavachApp : Application() {
 
         // Seed default trusted contacts only if Demo Mode is explicitly enabled
         applicationScope.launch(Dispatchers.IO) {
-            trustedContactRepo.seedDemoContactsIfEmpty(settingsRepo.isDemoMode.value)
-            auditLogRepo.log("APP_INITIALIZED", "Raksha360 initialized with Keystore security", "INFO")
+            try {
+                trustedContactRepo.seedDemoContactsIfEmpty(settingsRepo.isDemoMode.value)
+                auditLogRepo.log("APP_INITIALIZED", "Raksha360 initialized with Keystore security", "INFO")
+            } catch (e: Throwable) {
+                android.util.Log.w("NaariKavachApp", "Async initialization note: ${e.message}")
+            }
         }
     }
 

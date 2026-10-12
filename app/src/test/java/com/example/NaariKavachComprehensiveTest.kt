@@ -190,7 +190,7 @@ class NaariKavachComprehensiveTest {
         )
 
         val result = adapter.dispatchPoliceEmergencyAlert(dummyEvent, NagpurGeoConfig.SADAR_PILOT_CENTER)
-        assertEquals(DispatchStatus.SENT, result.status)
+        assertEquals(DispatchStatus.UNAVAILABLE, result.status)
         assertTrue("Message must disclose simulated demo status", result.message.contains("Demo"))
         assertNotNull(result.trackingTicket)
     }
@@ -256,5 +256,60 @@ class NaariKavachComprehensiveTest {
         assertFalse("Tampered evidence file must produce different SHA-256", initialHash.equals(tamperedHash, ignoreCase = true))
 
         tempFile.delete()
+    }
+
+    // 7. Production API Base URL Configuration & Normalization
+    @Test
+    fun testProductionApiBaseUrlConfigurationAndNormalization() {
+        val settingsRepo = SettingsRepository(context)
+        assertEquals(
+            "SettingsRepository default must match BuildConfig DEFAULT_API_BASE_URL",
+            BuildConfig.DEFAULT_API_BASE_URL,
+            SettingsRepository.DEFAULT_API_URL
+        )
+
+        // Verifying setPoliceEndpointConfig trims trailing slashes
+        settingsRepo.setPoliceEndpointConfig(
+            configured = true,
+            url = "https://raksha360-api.onrender.com/api/v1///",
+            token = "  test-device-token  "
+        )
+        assertEquals("https://raksha360-api.onrender.com/api/v1", settingsRepo.policeEndpointUrl.value)
+        assertEquals("test-device-token", settingsRepo.policeAuthToken.value)
+        assertTrue(settingsRepo.policeEndpointConfigured.value)
+    }
+
+    // 8. Demo/Synthetic Emergency Event Isolation
+    @Test
+    fun testDemoEmergencyEventIsolationPreventsLiveDispatch() = runTest {
+        val backendClient = BackendApiClient(context) {
+            BackendApiClient.ApiConfiguration(
+                isConfigured = true,
+                baseUrl = "https://raksha360-api.onrender.com/api/v1",
+                authToken = "test-token",
+                isDemoMode = true // Demo mode enabled
+            )
+        }
+
+        val demoRequest = com.example.data.remote.EmergencyEventRequest(
+            eventId = "DEMO-EVENT-SIMULATION-99",
+            timestamp = System.currentTimeMillis(),
+            triggerType = "DEMO_TEST_DRILL",
+            phraseDetected = "Demo Trigger",
+            speakerConfidence = 0.99f,
+            latitude = 21.1458,
+            longitude = 79.0882,
+            accuracyMeters = 5f,
+            locationDescription = "Nagpur Central Demonstration Area",
+            deviceSessionId = "SESSION-TEST-01",
+            isDemoMode = true
+        )
+
+        val response = backendClient.postEmergencyEvent(demoRequest)
+        assertTrue("Demo mode emergency event submission must succeed with local simulation", response.isSuccess)
+        val data = response.getOrThrow()
+        assertEquals(demoRequest.eventId, data.eventId)
+        assertTrue("Tracking ticket must indicate demo simulation", data.trackingToken.startsWith("DEMO-TKT-"))
+        assertEquals("RECEIVED", data.status)
     }
 }

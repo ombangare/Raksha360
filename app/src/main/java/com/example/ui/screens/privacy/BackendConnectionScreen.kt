@@ -74,7 +74,11 @@ fun BackendConnectionScreen(
             }
             Column {
                 Text("Backend connection", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text("Connect this phone to the laptop control room", style = MaterialTheme.typography.bodySmall, color = Color(0xFF64748B))
+                Text(
+                    if (com.example.BuildConfig.IS_PRODUCTION) "Connect this phone to the Raksha360 control room"
+                    else "Connect this phone to the laptop control room",
+                    style = MaterialTheme.typography.bodySmall, color = Color(0xFF64748B)
+                )
             }
         }
 
@@ -91,8 +95,8 @@ fun BackendConnectionScreen(
                 Column {
                     Text(if (configured && !demoMode) "Backend configured" else "Demo or unconfigured mode", fontWeight = FontWeight.Bold)
                     Text(
-                        if (configured && !demoMode) "SOS and reports will use the configured local API. External dispatch and contact notifications remain unconfigured unless separately integrated."
-                        else "Testing the connection does not send an SOS. Connect only to your own laptop server.",
+                        if (configured && !demoMode) "SOS and reports will use the configured API. External dispatch and contact notifications remain unconfigured unless separately integrated."
+                        else "Testing the connection does not send an SOS. Demo events stay local.",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -106,15 +110,20 @@ fun BackendConnectionScreen(
                     onValueChange = { url = it; message = null },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Backend API base URL") },
-                    placeholder = { Text("http://192.168.1.10:4000/api/v1") },
+                    placeholder = { Text(com.example.BuildConfig.DEFAULT_API_BASE_URL) },
                     singleLine = true,
-                    supportingText = { Text("Physical phone: use your laptop's LAN IPv4. Emulator: http://10.0.2.2:4000/api/v1") }
+                    supportingText = {
+                        Text(
+                            if (com.example.BuildConfig.IS_PRODUCTION) "Production endpoint: https://raksha360-api.onrender.com/api/v1 (HTTPS enforced)"
+                            else "Physical phone: use laptop LAN IPv4. Emulator: http://10.0.2.2:4000/api/v1"
+                        )
+                    }
                 )
                 OutlinedTextField(
                     value = token,
                     onValueChange = { token = it; message = null },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Device token from backend .env") },
+                    label = { Text(if (com.example.BuildConfig.IS_PRODUCTION) "Device token (from backend environment)" else "Device token from backend .env") },
                     singleLine = true,
                     visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = { TextButton(onClick = { showToken = !showToken }) { Text(if (showToken) "Hide" else "Show") } }
@@ -160,10 +169,14 @@ fun BackendConnectionScreen(
             Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
                 Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFF1D4ED8))
                 Column {
-                    Text("Laptop setup", fontWeight = FontWeight.Bold, color = Color(0xFF1E3A8A))
-                    Text("Start the backend on the laptop, keep the phone and laptop on the same trusted Wi-Fi, allow port 4000 on your private Windows network, then enter the laptop's IPv4 address here. Do not expose this development server directly to the public internet.", color = Color(0xFF1E40AF), style = MaterialTheme.typography.bodySmall)
+                    Text(if (com.example.BuildConfig.IS_PRODUCTION) "Production connection" else "Laptop setup", fontWeight = FontWeight.Bold, color = Color(0xFF1E3A8A))
+                    Text(
+                        if (com.example.BuildConfig.IS_PRODUCTION) "Connects to Raksha360's production control-room API on Render. Requires the authorized device token configured on the server. All traffic uses TLS encryption."
+                        else "Start the backend on the laptop, keep the phone and laptop on the same trusted Wi-Fi, allow port 4000 on your private Windows network, then enter the laptop's IPv4 address here. Do not expose this development server directly to the public internet.",
+                        color = Color(0xFF1E40AF), style = MaterialTheme.typography.bodySmall
+                    )
                     Spacer(Modifier.height(6.dp))
-                    Text("A local control-room acknowledgment means stored in Raksha360's queue. It does not mean the police received a dispatch.", color = Color(0xFF1E40AF), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                    Text("A control-room acknowledgment means stored in Raksha360's queue. It does not mean the police received a dispatch.", color = Color(0xFF1E40AF), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
                 }
             }
         }

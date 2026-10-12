@@ -26,10 +26,26 @@ class SettingsRepository(context: Context) {
     private val _offlineLocationEmailConsent = MutableStateFlow(prefs.getBoolean("offline_location_email_consent", false))
     val offlineLocationEmailConsent: StateFlow<Boolean> = _offlineLocationEmailConsent.asStateFlow()
 
+    companion object {
+        val DEFAULT_API_URL: String = com.example.BuildConfig.DEFAULT_API_BASE_URL
+    }
+
+    private fun resolveInitialEndpointUrl(): String {
+        val stored = prefs.getString("police_endpoint_url", null)
+        if (stored.isNullOrBlank()) {
+            return DEFAULT_API_URL
+        }
+        if (com.example.BuildConfig.IS_PRODUCTION && (stored == "http://10.0.2.2:4000/api/v1" || stored.contains("localhost") || stored.contains("127.0.0.1"))) {
+            prefs.edit().putString("police_endpoint_url", DEFAULT_API_URL).apply()
+            return DEFAULT_API_URL
+        }
+        return stored
+    }
+
     private val _policeEndpointConfigured = MutableStateFlow(prefs.getBoolean("police_endpoint_configured", false))
     val policeEndpointConfigured: StateFlow<Boolean> = _policeEndpointConfigured.asStateFlow()
 
-    private val _policeEndpointUrl = MutableStateFlow(prefs.getString("police_endpoint_url", "http://10.0.2.2:4000/api/v1") ?: "")
+    private val _policeEndpointUrl = MutableStateFlow(resolveInitialEndpointUrl())
     val policeEndpointUrl: StateFlow<String> = _policeEndpointUrl.asStateFlow()
 
     private val _policeAuthToken = MutableStateFlow(prefs.getString("police_auth_token", "") ?: "")
@@ -71,14 +87,16 @@ class SettingsRepository(context: Context) {
     }
 
     fun setPoliceEndpointConfig(configured: Boolean, url: String, token: String) {
+        val normalized = url.trim().trimEnd('/')
+        val trimmedToken = token.trim()
         prefs.edit()
             .putBoolean("police_endpoint_configured", configured)
-            .putString("police_endpoint_url", url)
-            .putString("police_auth_token", token)
+            .putString("police_endpoint_url", normalized)
+            .putString("police_auth_token", trimmedToken)
             .apply()
         _policeEndpointConfigured.value = configured
-        _policeEndpointUrl.value = url
-        _policeAuthToken.value = token
+        _policeEndpointUrl.value = normalized
+        _policeAuthToken.value = trimmedToken
     }
 
     fun setJourneyState(active: Boolean, destination: String = "", etaMinutes: Int = 30) {
