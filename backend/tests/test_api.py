@@ -793,3 +793,68 @@ def test_cors_preflight_and_response_headers(client: TestClient):
     assert opt.headers.get("access-control-allow-origin") == "http://localhost:5173"
 
 
+def test_production_startup_rejection_for_invalid_or_missing_database_url():
+    # Production with empty DATABASE_URL when required must raise RuntimeError
+    with pytest.raises(RuntimeError) as exc_info:
+        api.validate_environment_configuration(
+            env_name="production",
+            device_tok="secure-prod-device-token-xyz-987",
+            dash_tok="secure-prod-dashboard-token-abc-456",
+            cors_raw="https://raksha360-policedashboard.vercel.app",
+            db_url_raw="",
+        )
+    assert "DATABASE_URL" in str(exc_info.value)
+
+    # Production with non-PostgreSQL DATABASE_URL must raise RuntimeError
+    with pytest.raises(RuntimeError) as exc_info:
+        api.validate_environment_configuration(
+            env_name="production",
+            device_tok="secure-prod-device-token-xyz-987",
+            dash_tok="secure-prod-dashboard-token-abc-456",
+            cors_raw="https://raksha360-policedashboard.vercel.app",
+            db_url_raw="mysql://user:pass@localhost:3306/db",
+        )
+    assert "PostgreSQL connection string" in str(exc_info.value)
+
+
+def test_production_startup_success_with_postgres_database_url():
+    # Production with valid PostgreSQL / Supabase pooler URL must pass validation
+    api.validate_environment_configuration(
+        env_name="production",
+        device_tok="secure-prod-device-token-xyz-987",
+        dash_tok="secure-prod-dashboard-token-abc-456",
+        cors_raw="https://raksha360-policedashboard.vercel.app",
+        db_url_raw="postgresql://postgres.testproject:mock-secret@aws-0-ap-south-1.pooler.supabase.com:5432/postgres",
+    )
+
+
+def test_database_row_compatibility_and_conversions():
+    from backend.app.db import DatabaseRow, convert_query_to_postgres
+
+    # DatabaseRow acts as dictionary, supports integer indexing, and dict() conversion
+    row = DatabaseRow({"id": "INC-001", "status": "New", "count": 10})
+    assert row["id"] == "INC-001"
+    assert row["status"] == "New"
+    assert row.get("count") == 10
+    assert row[0] == "INC-001"
+    assert row[1] == "New"
+    assert row[2] == 10
+    assert dict(row) == {"id": "INC-001", "status": "New", "count": 10}
+
+    # Query converter translates ? to %s and case-insensitive collations
+    q1 = "SELECT * FROM incidents WHERE event_id = ? AND is_demo = ?"
+    assert convert_query_to_postgres(q1) == "SELECT * FROM incidents WHERE event_id = %s AND is_demo = %s"
+
+    q2 = "SELECT * FROM police_station_directory ORDER BY name COLLATE NOCASE"
+    assert convert_query_to_postgres(q2) == "SELECT * FROM police_station_directory ORDER BY LOWER(name)"
+
+
+def test_healthcheck_reports_active_database_engine(client: TestClient):
+    res = client.get("/api/v1/health")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "ONLINE"
+    assert data["database"] in ("sqlite", "postgresql")
+
+
+

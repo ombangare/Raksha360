@@ -26,7 +26,15 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR.parent / ".env")
 DATA_DIR = Path(os.getenv("RAKSHA360_DATA_DIR", str(ROOT_DIR / "data"))).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = Path(os.getenv("RAKSHA360_DATABASE_PATH", str(DATA_DIR / "raksha360.sqlite3"))).resolve()
+from backend.app.db import (
+    db,
+    is_postgres,
+    get_engine_name,
+    get_sqlite_path,
+    get_database_url,
+    close_db_pool,
+)
+DB_PATH = get_sqlite_path()
 
 KNOWN_DEV_DEVICE_TOKEN = "local-dev-device-token-change-me"
 KNOWN_DEV_DASHBOARD_TOKEN = "local-dev-dashboard-token-change-me"
@@ -60,6 +68,7 @@ def validate_environment_configuration(
     device_tok: str | None = None,
     dash_tok: str | None = None,
     cors_raw: str | None = None,
+    db_url_raw: str | None = None,
 ) -> None:
     """
     Fail-fast guard ensuring production-like configurations never silently use placeholder or missing credentials.
@@ -92,13 +101,23 @@ def validate_environment_configuration(
             )
         if not raw_cors.strip():
             raise RuntimeError(
-                "Production configuration error: In production environment, RAKSHA360_CORS_ORIGINS must be explicitly configured with trusted frontend origin(s) (e.g. https://raksha360.vercel.app)."
+                "Production configuration error: In production environment, RAKSHA360_CORS_ORIGINS must be explicitly configured with trusted frontend origin(s) (e.g. https://raksha360-policedashboard.vercel.app)."
             )
         cors_list = [item.strip() for item in raw_cors.split(",") if item.strip()]
         if "*" in cors_list:
             raise RuntimeError(
                 "Production configuration error: Wildcard '*' in RAKSHA360_CORS_ORIGINS is prohibited in production. Explicit origins are required."
             )
+        raw_db = db_url_raw if db_url_raw is not None else get_database_url()
+        if db_url_raw is not None or os.getenv("RAKSHA360_REQUIRE_DATABASE_URL", "false").lower() == "true":
+            if not raw_db.strip():
+                raise RuntimeError(
+                    "Production configuration error: In production environment, DATABASE_URL must be explicitly configured with your Supabase PostgreSQL connection string."
+                )
+            if not (raw_db.startswith("postgres://") or raw_db.startswith("postgresql://")):
+                raise RuntimeError(
+                    "Production configuration error: DATABASE_URL must be a valid PostgreSQL connection string."
+                )
 
 CORS_ORIGINS = get_cors_origins()
 APP_VERSION = "1.3.0-local"
@@ -123,6 +142,7 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     offline_monitor_task = None
+    close_db_pool()
 
 
 app = FastAPI(
@@ -141,23 +161,6 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Dashboard-Token"],
 )
-
-
-# ---------- Database ----------
-@contextmanager
-def db() -> Any:
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 15000")
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def utc_ms() -> int:
@@ -208,10 +211,15 @@ def row_to_dispatch(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 def initialize_database() -> None:
     with db() as conn:
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS incidents (
+        if is_postgres():
+            migration_file = ROOT_DIR / "app" / "migrations" / "001_initial_schema.sql"
+            if migration_file.is_file():
+                conn.executescript(migration_file.read_text(encoding="utf-8"))
+        else:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS incidents (
                 event_id TEXT PRIMARY KEY,
                 trigger_type TEXT NOT NULL,
                 phrase_detected TEXT NOT NULL DEFAULT '',
@@ -701,7 +709,7 @@ def api_health() -> dict[str, Any]:
         "status": "ONLINE",
         "service": "Raksha360 Local Control Room API",
         "version": APP_VERSION,
-        "database": "sqlite",
+        "database": get_engine_name(),
         "incidentRecords": incident_total,
         "officialPoliceGateway": "NOT_CONFIGURED",
         "externalNotifications": "SMTP_CONFIGURED" if _smtp_is_configured() else "NOT_CONFIGURED",
@@ -832,7 +840,14 @@ async def receive_device_heartbeat(payload: DeviceHeartbeat) -> dict[str, Any]:
         if payload.offlineLocationEmailConsent:
             for contact in active_email_contacts:
                 conn.execute(
-                    "INSERT OR REPLACE INTO emergency_contacts (device_id, email, name, relationship, notify_by_email, is_active, updated_at) VALUES (?, ?, ?, ?, 1, 1, ?)",
+                    """INSERT INTO emergency_contacts (device_id, email, name, relationship, notify_by_email, is_active, updated_at)
+                       VALUES (?, ?, ?, ?, 1, 1, ?)
+                       ON CONFLICT (device_id, email) DO UPDATE SET
+                           name = excluded.name,
+                           relationship = excluded.relationship,
+                           notify_by_email = 1,
+                           is_active = 1,
+                           updated_at = excluded.updated_at""",
                     (payload.deviceId, contact.email, contact.name.strip(), contact.relationship.strip(), current),
                 )
         else:
@@ -897,10 +912,11 @@ async def evaluate_offline_devices_once() -> None:
                 if not current_row or current_row["monitoring_enabled"] != 1 or current_row["offline_detected_at"] is not None or current_row["last_seen_at"] > current - threshold_ms:
                     continue
                 conn.execute(
-                    """INSERT OR IGNORE INTO incidents (event_id, trigger_type, reported_at, status, severity, latitude,
+                    """INSERT INTO incidents (event_id, trigger_type, reported_at, status, severity, latitude,
                        longitude, accuracy_meters, location_description, device_session_id, is_demo, source, updated_at,
                        notes, details_json, last_location_at, last_latitude, last_longitude)
-                       VALUES (?, 'DEVICE_OFFLINE', ?, 'New', 'High', ?, ?, ?, ?, ?, 0, 'BACKEND_OFFLINE_MONITOR', ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, 'DEVICE_OFFLINE', ?, 'New', 'High', ?, ?, ?, ?, ?, 0, 'BACKEND_OFFLINE_MONITOR', ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT (event_id) DO NOTHING""",
                     (incident_id, offline_detected, device.get("last_latitude"), device.get("last_longitude"),
                      device.get("last_accuracy_meters"), location_text, device["device_id"], offline_detected,
                      "Device missed the configured heartbeat threshold. Possible power-off, coverage loss, or app/service stop; verify before concluding danger.",
@@ -1487,7 +1503,7 @@ def list_police_station_directory() -> dict[str, Any]:
     """Read-only official public-directory snapshot; not a police dispatch integration."""
     with db() as conn:
         rows = conn.execute(
-            "SELECT * FROM police_station_directory ORDER BY name COLLATE NOCASE"
+            "SELECT * FROM police_station_directory ORDER BY LOWER(name)"
         ).fetchall()
     items = []
     for row in rows:
