@@ -17,8 +17,14 @@ import com.example.service.location.UserLocation
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.net.SocketTimeoutException
+import java.net.ConnectException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import android.util.Log
+import com.example.data.repository.AuthStage
+import com.example.data.repository.AuthErrorCategory
+import com.example.data.repository.AuthenticationException
 
 class BackendApiClient(
     private val context: Context,
@@ -33,9 +39,9 @@ class BackendApiClient(
     )
 
     val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(8, TimeUnit.SECONDS)
-        .writeTimeout(8, TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
@@ -546,9 +552,22 @@ class BackendApiClient(
 
     override suspend fun verifyGoogleIdToken(idToken: String, nonce: String?): Result<GoogleAuthResponse> =
         withContext(Dispatchers.IO) {
+            val startTime = System.currentTimeMillis()
             val config = getApiConfig()
+
+            Log.i("BackendApiClient", "[STAGE: BACKEND_AUTHENTICATION] Starting token verification with backend")
+
             if (!isOnline()) {
-                return@withContext Result.failure(IOException("No network connection. Please connect to the internet to sign in."))
+                val elapsed = System.currentTimeMillis() - startTime
+                Log.w("BackendApiClient", "[STAGE: BACKEND_AUTHENTICATION] Phone is offline after ${elapsed}ms (Category: BACKEND_OFFLINE)")
+                return@withContext Result.failure(
+                    AuthenticationException(
+                        stage = AuthStage.BackendAuthentication,
+                        category = AuthErrorCategory.BACKEND_OFFLINE,
+                        elapsedMs = elapsed,
+                        message = "No network connection. Please connect to the internet to sign in."
+                    )
+                )
             }
 
             try {
@@ -564,6 +583,7 @@ class BackendApiClient(
                     .build()
 
                 val response = okHttpClient.newCall(httpRequest).execute()
+                val elapsed = System.currentTimeMillis() - startTime
                 val body = response.body?.string() ?: "{}"
 
                 if (!response.isSuccessful) {
@@ -572,8 +592,26 @@ class BackendApiClient(
                     } catch (_: Exception) {
                         "HTTP ${response.code}"
                     }
-                    return@withContext Result.failure(IOException("Google authentication rejected by server: $detail"))
+                    Log.e(
+                        "BackendApiClient",
+                        "[STAGE: BACKEND_AUTHENTICATION] Server rejected authentication (HTTP ${response.code}) after ${elapsed}ms (Category: BACKEND_HTTP_ERROR)"
+                    )
+                    return@withContext Result.failure(
+                        AuthenticationException(
+                            stage = AuthStage.BackendAuthentication,
+                            category = AuthErrorCategory.BACKEND_HTTP_ERROR,
+                            elapsedMs = elapsed,
+                            httpStatusCode = response.code,
+                            message = "Google authentication rejected by server ($detail)",
+                            cause = IOException("HTTP ${response.code}: $detail")
+                        )
+                    )
                 }
+
+                Log.i(
+                    "BackendApiClient",
+                    "[STAGE: BACKEND_AUTHENTICATION] Server authentication successful (HTTP 200) after ${elapsed}ms"
+                )
 
                 val resObj = JSONObject(body)
                 Result.success(
@@ -588,8 +626,82 @@ class BackendApiClient(
                         expiresAt = resObj.getLong("expiresAt")
                     )
                 )
+            } catch (e: SocketTimeoutException) {
+                val elapsed = System.currentTimeMillis() - startTime
+                Log.w(
+                    "BackendApiClient",
+                    "[STAGE: BACKEND_AUTHENTICATION] Connection timed out after ${elapsed}ms (Category: BACKEND_NETWORK_TIMEOUT)"
+                )
+                Result.failure(
+                    AuthenticationException(
+                        stage = AuthStage.BackendAuthentication,
+                        category = AuthErrorCategory.BACKEND_NETWORK_TIMEOUT,
+                        elapsedMs = elapsed,
+                        message = "Connection to Raksha360 control room timed out after ${elapsed / 1000}s. The server may be waking up; please try again.",
+                        cause = e
+                    )
+                )
+            } catch (e: java.io.InterruptedIOException) {
+                val elapsed = System.currentTimeMillis() - startTime
+                Log.w(
+                    "BackendApiClient",
+                    "[STAGE: BACKEND_AUTHENTICATION] Request interrupted/timeout after ${elapsed}ms (Category: BACKEND_NETWORK_TIMEOUT)"
+                )
+                Result.failure(
+                    AuthenticationException(
+                        stage = AuthStage.BackendAuthentication,
+                        category = AuthErrorCategory.BACKEND_NETWORK_TIMEOUT,
+                        elapsedMs = elapsed,
+                        message = "Connection to Raksha360 control room timed out. Please try again.",
+                        cause = e
+                    )
+                )
+            } catch (e: ConnectException) {
+                val elapsed = System.currentTimeMillis() - startTime
+                Log.e(
+                    "BackendApiClient",
+                    "[STAGE: BACKEND_AUTHENTICATION] Failed to connect to server after ${elapsed}ms (Category: BACKEND_NETWORK_ERROR)"
+                )
+                Result.failure(
+                    AuthenticationException(
+                        stage = AuthStage.BackendAuthentication,
+                        category = AuthErrorCategory.BACKEND_NETWORK_ERROR,
+                        elapsedMs = elapsed,
+                        message = "Unable to connect to Raksha360 control room server. Please verify your internet connection.",
+                        cause = e
+                    )
+                )
+            } catch (e: IOException) {
+                val elapsed = System.currentTimeMillis() - startTime
+                Log.e(
+                    "BackendApiClient",
+                    "[STAGE: BACKEND_AUTHENTICATION] Network I/O failure after ${elapsed}ms (Category: BACKEND_NETWORK_ERROR)"
+                )
+                Result.failure(
+                    AuthenticationException(
+                        stage = AuthStage.BackendAuthentication,
+                        category = AuthErrorCategory.BACKEND_NETWORK_ERROR,
+                        elapsedMs = elapsed,
+                        message = "Network error communicating with control room: ${e.message}",
+                        cause = e
+                    )
+                )
             } catch (e: Exception) {
-                Result.failure(e)
+                val elapsed = System.currentTimeMillis() - startTime
+                Log.e(
+                    "BackendApiClient",
+                    "[STAGE: BACKEND_AUTHENTICATION] Unexpected error after ${elapsed}ms (Category: UNKNOWN_ERROR)",
+                    e
+                )
+                Result.failure(
+                    AuthenticationException(
+                        stage = AuthStage.BackendAuthentication,
+                        category = AuthErrorCategory.UNKNOWN_ERROR,
+                        elapsedMs = elapsed,
+                        message = e.localizedMessage ?: "Unexpected error during authentication",
+                        cause = e
+                    )
+                )
             }
         }
 
@@ -670,16 +782,36 @@ class BackendApiClient(
                     .build()
 
                 val response = okHttpClient.newCall(httpRequest).execute()
-                val body = response.body?.string() ?: "{}"
-                val resObj = JSONObject(body)
+                val body = response.body?.string().orEmpty()
+                val resObj = try { JSONObject(body) } catch (_: Exception) { JSONObject() }
+
+                if (!response.isSuccessful) {
+                    val detail = resObj.optString("detail").takeIf { it.isNotBlank() }
+                        ?: resObj.optString("error").takeIf { it.isNotBlank() }
+                        ?: "Backend returned HTTP ${response.code}"
+                    return@withContext Result.success(
+                        AssistantSessionResponse(
+                            configured = false,
+                            agentId = resObj.optString("agentId", "agent_3701m51qchkaenxsjnzr8jvrm66"),
+                            agentName = resObj.optString("agentName", "Raksha360 AI Assistant"),
+                            signedUrl = null,
+                            message = detail,
+                            error = detail
+                        )
+                    )
+                }
+
+                val errorMsg = resObj.optString("error").takeIf { it.isNotBlank() && it != "null" }
+                val messageText = resObj.optString("message").takeIf { it.isNotBlank() && it != "null" }
+
                 Result.success(
                     AssistantSessionResponse(
                         configured = resObj.optBoolean("configured", false),
                         agentId = resObj.optString("agentId", "agent_3701m51qchkaenxsjnzr8jvrm66"),
                         agentName = resObj.optString("agentName", "Raksha360 AI Assistant"),
                         signedUrl = resObj.optString("signedUrl").takeIf { it.isNotBlank() && it != "null" },
-                        message = resObj.optString("message").takeIf { it.isNotBlank() },
-                        error = resObj.optString("error").takeIf { it.isNotBlank() }
+                        message = messageText ?: errorMsg,
+                        error = errorMsg ?: messageText
                     )
                 )
             } catch (e: Exception) {

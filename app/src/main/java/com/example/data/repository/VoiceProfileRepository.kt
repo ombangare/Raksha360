@@ -81,30 +81,36 @@ class VoiceProfileRepository(
         embedding: FloatArray,
         sampleCount: Int,
         threshold: Float = 0.82f
-    ) {
-        val json = JSONObject().apply {
-            put("phrase", phrase)
-            put("threshold", threshold.toDouble())
-            put("enrolledAt", System.currentTimeMillis())
-            put("sampleCount", sampleCount)
-            val embArray = JSONArray()
-            for (v in embedding) {
-                embArray.put(v.toDouble())
+    ): Boolean {
+        return try {
+            val json = JSONObject().apply {
+                put("phrase", phrase)
+                put("threshold", threshold.toDouble())
+                put("enrolledAt", System.currentTimeMillis())
+                put("sampleCount", sampleCount)
+                val embArray = JSONArray()
+                for (v in embedding) {
+                    embArray.put(v.toDouble())
+                }
+                put("embedding", embArray)
             }
-            put("embedding", embArray)
+
+            val encrypted = cryptoManager.encrypt(json.toString())
+            val saved = prefs.edit().putString(KEY_ENCRYPTED_PROFILE, encrypted).commit()
+            if (saved) {
+                _currentProfile.value = VoiceProfile(
+                    isEnrolled = true,
+                    phrase = phrase,
+                    embedding = embedding,
+                    threshold = threshold,
+                    enrolledAt = System.currentTimeMillis(),
+                    sampleCount = sampleCount
+                )
+            }
+            saved
+        } catch (_: Exception) {
+            false
         }
-
-        val encrypted = cryptoManager.encrypt(json.toString())
-        prefs.edit().putString(KEY_ENCRYPTED_PROFILE, encrypted).apply()
-
-        _currentProfile.value = VoiceProfile(
-            isEnrolled = true,
-            phrase = phrase,
-            embedding = embedding,
-            threshold = threshold,
-            enrolledAt = System.currentTimeMillis(),
-            sampleCount = sampleCount
-        )
     }
 
     fun updateThreshold(newThreshold: Float) {

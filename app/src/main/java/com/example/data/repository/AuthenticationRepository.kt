@@ -200,8 +200,22 @@ class AuthenticationRepository(
         if (serverClientId == DEFAULT_WEB_CLIENT_ID_PLACEHOLDER || serverClientId.isBlank()) {
             val errorMsg = "Google OAuth Web Client ID not configured. Please add 'google.web.client.id=YOUR_CLIENT_ID' in local.properties or use Demo Mode."
             _authState.value = AuthState.Unauthenticated(errorMsg)
-            return@withContext Result.failure(IllegalStateException(errorMsg))
+            return@withContext Result.failure(
+                AuthenticationException(
+                    stage = AuthStage.CredentialAcquisition,
+                    category = AuthErrorCategory.CONFIGURATION_ERROR,
+                    elapsedMs = 0L,
+                    message = errorMsg
+                )
+            )
         }
+
+        // STAGE 1: CREDENTIAL_ACQUISITION
+        val stage1Start = System.currentTimeMillis()
+        Log.i(TAG, "[STAGE: CREDENTIAL_ACQUISITION] Starting Google Credential Manager flow")
+
+        val rawIdToken: String
+        val profilePictureUriString: String?
 
         try {
             val googleIdOption = GetGoogleIdOption.Builder()
@@ -219,81 +233,179 @@ class AuthenticationRepository(
                 request = request
             )
 
+            val stage1Elapsed = System.currentTimeMillis() - stage1Start
             val credential = result.credential
             if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
-                val rawIdToken = googleIdTokenCredential.idToken
-
-                if (rawIdToken.isNullOrBlank()) {
+                val token = googleIdTokenCredential.idToken
+                if (token.isNullOrBlank()) {
                     val msg = "No Google ID token was returned by Credential Manager."
-                    _authState.value = AuthState.Unauthenticated(msg)
-                    return@withContext Result.failure(IllegalStateException(msg))
-                }
-
-                // Verify the Google ID token with the backend
-                val backendResult = backendClient.verifyGoogleIdToken(rawIdToken)
-                if (backendResult.isFailure) {
-                    val error = backendResult.exceptionOrNull()
-                    val errorMsg = error?.localizedMessage ?: "Backend verification failed"
-                    _authState.value = AuthState.Unauthenticated(errorMsg)
-                    auditLogger.logSecurityEvent(
-                        action = "GOOGLE_TOKEN_REJECTED",
-                        category = "AUTHENTICATION",
-                        details = "Backend rejected Google ID token: ${error?.message}",
-                        severity = "WARNING"
+                    Log.e(TAG, "[STAGE: CREDENTIAL_ACQUISITION] Empty ID token after ${stage1Elapsed}ms (Category: GOOGLE_CREDENTIAL_ERROR)")
+                    val authEx = AuthenticationException(
+                        stage = AuthStage.CredentialAcquisition,
+                        category = AuthErrorCategory.GOOGLE_CREDENTIAL_ERROR,
+                        elapsedMs = stage1Elapsed,
+                        message = msg
                     )
-                    return@withContext Result.failure(error ?: IllegalStateException(errorMsg))
+                    _authState.value = AuthState.Unauthenticated(msg)
+                    return@withContext Result.failure(authEx)
                 }
-
-                val authResp = backendResult.getOrThrow()
-                val user = UserProfile(
-                    uid = authResp.uid,
-                    displayName = authResp.displayName,
-                    email = authResp.email,
-                    photoUrl = authResp.photoUrl ?: googleIdTokenCredential.profilePictureUri?.toString(),
-                    idToken = rawIdToken,
-                    sessionToken = authResp.sessionToken,
-                    expiresAt = authResp.expiresAt,
-                    isDemoUser = false
-                )
-
-                // Persist session locally
-                persistUserSession(user)
-                _authState.value = AuthState.Authenticated(user)
-
-                auditLogger.logSecurityEvent(
-                    action = "GOOGLE_SIGN_IN_SUCCESS",
-                    category = "AUTHENTICATION",
-                    details = "Authenticated and verified via backend: ${user.email}",
-                    severity = "INFO"
-                )
-
-                Result.success(user)
+                rawIdToken = token
+                profilePictureUriString = googleIdTokenCredential.profilePictureUri?.toString()
+                Log.i(TAG, "[STAGE: CREDENTIAL_ACQUISITION] Credential acquired successfully in ${stage1Elapsed}ms")
             } else {
                 val msg = "Unexpected credential format returned from Credential Manager"
-                Log.w(TAG, msg)
+                Log.w(TAG, "[STAGE: CREDENTIAL_ACQUISITION] Unexpected credential format after ${stage1Elapsed}ms (Category: GOOGLE_CREDENTIAL_ERROR)")
+                val authEx = AuthenticationException(
+                    stage = AuthStage.CredentialAcquisition,
+                    category = AuthErrorCategory.GOOGLE_CREDENTIAL_ERROR,
+                    elapsedMs = stage1Elapsed,
+                    message = msg
+                )
                 _authState.value = AuthState.Unauthenticated(msg)
-                Result.failure(IllegalStateException(msg))
+                return@withContext Result.failure(authEx)
             }
         } catch (e: GetCredentialCancellationException) {
-            Log.d(TAG, "Google Sign-In cancelled by user")
+            val stage1Elapsed = System.currentTimeMillis() - stage1Start
+            Log.i(TAG, "[STAGE: CREDENTIAL_ACQUISITION] User cancelled credential selection after ${stage1Elapsed}ms (Category: GOOGLE_CREDENTIAL_CANCELED)")
+            val authEx = AuthenticationException(
+                stage = AuthStage.CredentialAcquisition,
+                category = AuthErrorCategory.GOOGLE_CREDENTIAL_CANCELED,
+                elapsedMs = stage1Elapsed,
+                message = "Sign-in cancelled",
+                cause = e
+            )
             _authState.value = AuthState.Unauthenticated("Sign-in cancelled")
-            Result.failure(e)
+            return@withContext Result.failure(authEx)
         } catch (e: GetCredentialException) {
-            Log.e(TAG, "Credential Manager error: ${e.message}", e)
-            val errorMsg = "Google Sign-In failed: ${e.localizedMessage}"
-            _authState.value = AuthState.Unauthenticated(errorMsg)
+            val stage1Elapsed = System.currentTimeMillis() - stage1Start
+            val isTimeout = e.type.contains("TIMEOUT", ignoreCase = true) ||
+                e.message?.contains("timeout", ignoreCase = true) == true ||
+                e.message?.contains("15") == true
+            val category = if (isTimeout) AuthErrorCategory.GOOGLE_CREDENTIAL_TIMEOUT else AuthErrorCategory.GOOGLE_CREDENTIAL_ERROR
+            val userMsg = if (isTimeout) {
+                "Google account selection timed out. Please try tapping 'Continue with Google' again."
+            } else {
+                "Google Sign-In failed: ${e.localizedMessage ?: "Unknown error"}"
+            }
+
+            if (isTimeout) {
+                Log.w(TAG, "[STAGE: CREDENTIAL_ACQUISITION] Credential acquisition timed out after ${stage1Elapsed}ms (Category: GOOGLE_CREDENTIAL_TIMEOUT)")
+            } else {
+                Log.e(TAG, "[STAGE: CREDENTIAL_ACQUISITION] Credential acquisition failed after ${stage1Elapsed}ms (Category: GOOGLE_CREDENTIAL_ERROR, type: ${e.type})")
+            }
+
+            val authEx = AuthenticationException(
+                stage = AuthStage.CredentialAcquisition,
+                category = category,
+                elapsedMs = stage1Elapsed,
+                message = userMsg,
+                cause = e
+            )
+            _authState.value = AuthState.Unauthenticated(userMsg)
             auditLogger.logSecurityEvent(
-                action = "GOOGLE_SIGN_IN_FAILED",
+                action = if (isTimeout) "GOOGLE_CREDENTIAL_TIMEOUT" else "GOOGLE_SIGN_IN_FAILED",
                 category = "AUTHENTICATION",
-                details = "Credential error: ${e.type}",
+                details = "Credential acquisition failure: ${e.type}",
                 severity = "WARNING"
             )
-            Result.failure(e)
+            return@withContext Result.failure(authEx)
         } catch (e: Exception) {
-            Log.e(TAG, "Unexpected sign-in error", e)
-            _authState.value = AuthState.Unauthenticated(e.message)
-            Result.failure(e)
+            val stage1Elapsed = System.currentTimeMillis() - stage1Start
+            Log.e(TAG, "[STAGE: CREDENTIAL_ACQUISITION] Unexpected error after ${stage1Elapsed}ms", e)
+            val authEx = AuthenticationException(
+                stage = AuthStage.CredentialAcquisition,
+                category = AuthErrorCategory.UNKNOWN_ERROR,
+                elapsedMs = stage1Elapsed,
+                message = e.localizedMessage ?: "Unexpected sign-in error",
+                cause = e
+            )
+            _authState.value = AuthState.Unauthenticated(authEx.message)
+            return@withContext Result.failure(authEx)
+        }
+
+        // STAGE 2: BACKEND_AUTHENTICATION
+        val stage2Start = System.currentTimeMillis()
+        Log.i(TAG, "[STAGE: BACKEND_AUTHENTICATION] Starting token verification with backend")
+        val backendResult = backendClient.verifyGoogleIdToken(rawIdToken)
+        val stage2Elapsed = System.currentTimeMillis() - stage2Start
+
+        if (backendResult.isFailure) {
+            val error = backendResult.exceptionOrNull()
+            val authEx = if (error is AuthenticationException) {
+                error
+            } else {
+                val isTimeout = error is java.net.SocketTimeoutException || error?.message?.contains("timeout", ignoreCase = true) == true
+                AuthenticationException(
+                    stage = AuthStage.BackendAuthentication,
+                    category = if (isTimeout) AuthErrorCategory.BACKEND_NETWORK_TIMEOUT else AuthErrorCategory.BACKEND_HTTP_ERROR,
+                    elapsedMs = stage2Elapsed,
+                    message = if (isTimeout) {
+                        "Connection to Raksha360 control room timed out. The server may be waking up; please try again."
+                    } else {
+                        error?.localizedMessage ?: "Backend verification failed"
+                    },
+                    cause = error
+                )
+            }
+
+            Log.w(
+                TAG,
+                "[STAGE: BACKEND_AUTHENTICATION] Backend verification failed after ${authEx.elapsedMs}ms (Category: ${authEx.category}, HTTP: ${authEx.httpStatusCode ?: "N/A"})"
+            )
+            _authState.value = AuthState.Unauthenticated(authEx.message)
+            auditLogger.logSecurityEvent(
+                action = if (authEx.category == AuthErrorCategory.BACKEND_NETWORK_TIMEOUT) "BACKEND_AUTH_TIMEOUT" else "GOOGLE_TOKEN_REJECTED",
+                category = "AUTHENTICATION",
+                details = "Backend verification failure: category=${authEx.category}, elapsedMs=${authEx.elapsedMs}ms",
+                severity = "WARNING"
+            )
+            return@withContext Result.failure(authEx)
+        }
+
+        val authResp = backendResult.getOrThrow()
+        Log.i(TAG, "[STAGE: BACKEND_AUTHENTICATION] Backend verification succeeded in ${stage2Elapsed}ms")
+
+        // STAGE 3: SESSION_PERSISTENCE
+        val stage3Start = System.currentTimeMillis()
+        Log.i(TAG, "[STAGE: SESSION_PERSISTENCE] Storing session credentials")
+        try {
+            val user = UserProfile(
+                uid = authResp.uid,
+                displayName = authResp.displayName,
+                email = authResp.email,
+                photoUrl = authResp.photoUrl ?: profilePictureUriString,
+                idToken = rawIdToken,
+                sessionToken = authResp.sessionToken,
+                expiresAt = authResp.expiresAt,
+                isDemoUser = false
+            )
+
+            persistUserSession(user)
+            _authState.value = AuthState.Authenticated(user)
+            val stage3Elapsed = System.currentTimeMillis() - stage3Start
+            Log.i(TAG, "[STAGE: SESSION_PERSISTENCE] Session persisted successfully in ${stage3Elapsed}ms (ExpiresAt: ${user.expiresAt})")
+
+            auditLogger.logSecurityEvent(
+                action = "GOOGLE_SIGN_IN_SUCCESS",
+                category = "AUTHENTICATION",
+                details = "User signed in and session persisted successfully (durationMs=${stage1Start + stage2Elapsed + stage3Elapsed})",
+                severity = "INFO"
+            )
+
+            Result.success(user)
+        } catch (e: Exception) {
+            val stage3Elapsed = System.currentTimeMillis() - stage3Start
+            Log.e(TAG, "[STAGE: SESSION_PERSISTENCE] Failed to persist session after ${stage3Elapsed}ms (Category: SESSION_PERSISTENCE_ERROR)", e)
+            val authEx = AuthenticationException(
+                stage = AuthStage.SessionPersistence,
+                category = AuthErrorCategory.SESSION_PERSISTENCE_ERROR,
+                elapsedMs = stage3Elapsed,
+                message = "Failed to store session locally: ${e.localizedMessage ?: "Unknown error"}",
+                cause = e
+            )
+            _authState.value = AuthState.Unauthenticated(authEx.message)
+            Result.failure(authEx)
         }
     }
 

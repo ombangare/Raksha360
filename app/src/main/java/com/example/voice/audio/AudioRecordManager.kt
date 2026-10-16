@@ -28,10 +28,12 @@ class AudioRecordManager(private val context: Context) {
     val liveRmsLevel: StateFlow<Float> = _liveRmsLevel.asStateFlow()
     private var recordJob: Job? = null
     @Volatile private var activeAudioRecord: AudioRecord? = null
+    @Volatile private var stopRequested = false
 
     @SuppressLint("MissingPermission")
     fun startSampleRecording(scope: CoroutineScope, durationMillis: Long = 3000, onFinished: (ShortArray) -> Unit) {
         if (_isRecording.value) return
+        stopRequested = false
         recordJob?.cancel()
         recordJob = scope.launch(Dispatchers.IO) {
             val captured = ArrayList<Short>()
@@ -46,7 +48,7 @@ class AudioRecordManager(private val context: Context) {
                 _isRecording.value = true
                 val buffer = ShortArray(bufferSize)
                 val start = System.currentTimeMillis()
-                while (isActive && System.currentTimeMillis() - start < durationMillis) {
+                while (isActive && !stopRequested && System.currentTimeMillis() - start < durationMillis) {
                     val read = recorder.read(buffer, 0, buffer.size)
                     if (read > 0) {
                         for (index in 0 until read) captured.add(buffer[index])
@@ -64,6 +66,7 @@ class AudioRecordManager(private val context: Context) {
             } finally {
                 _isRecording.value = false
                 _liveRmsLevel.value = 0f
+                stopRequested = false
                 try { if (recorder?.recordingState == AudioRecord.RECORDSTATE_RECORDING) recorder.stop() } catch (_: Exception) {}
                 try { recorder?.release() } catch (_: Exception) {}
                 activeAudioRecord = null
@@ -72,7 +75,13 @@ class AudioRecordManager(private val context: Context) {
         }
     }
 
+    /** Request the active recording loop to stop early and return whatever audio was captured so far. */
+    fun stopRecordingEarly() {
+        stopRequested = true
+    }
+
     fun cancelRecording() {
+        stopRequested = true
         recordJob?.cancel()
         try { activeAudioRecord?.stop() } catch (_: Exception) {}
         try { activeAudioRecord?.release() } catch (_: Exception) {}

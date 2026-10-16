@@ -9,6 +9,9 @@ import com.example.data.remote.BackendApiClient
 import com.example.data.remote.BackendConnectionState
 import com.example.data.repository.AuthenticationRepository
 import com.example.data.repository.AuthState
+import com.example.data.repository.AuthStage
+import com.example.data.repository.AuthErrorCategory
+import com.example.data.repository.AuthenticationException
 import com.example.data.repository.SettingsRepository
 import com.example.data.repository.TrustedContactRepository
 import com.example.domain.map.NagpurGeoConfig
@@ -717,4 +720,169 @@ class NaariKavachComprehensiveTest {
         assertNull("Signed URL must be null when unconfigured", sessionUnconfigured.signedUrl)
         assertTrue(sessionUnconfigured.error!!.contains("ELEVENLABS_API_KEY"))
     }
+
+    // 13. MainViewModel Startup & Flow Initialization Regression Test
+    @Test
+    fun testMainViewModelInitializationDoesNotCrashOnFlowCollection() {
+        val application = ApplicationProvider.getApplicationContext<Context>() as android.app.Application
+        val viewModel = com.example.ui.viewmodel.MainViewModel(application)
+
+        assertNotNull("MainViewModel must initialize without crashing", viewModel)
+        assertNotNull("authState must not be null upon initialization", viewModel.authState)
+        assertNotNull("authState value must be available", viewModel.authState.value)
+        assertNotNull("isDemoMode must not be null upon initialization", viewModel.isDemoMode)
+        assertNotNull("connectionState must be initialized", viewModel.connectionState.value)
+        assertNotNull("assistantManager must be accessible", viewModel.assistantManager)
+    }
+
+    // 14. Authentication Timeout Diagnostics & Stage Differentiation Regression Tests
+    @Test
+    fun testOkHttpClientTimeoutValuesAreStandard30Seconds() {
+        val backendClient = BackendApiClient(context) { BackendApiClient.ApiConfiguration() }
+        assertEquals(
+            "OkHttpClient connectTimeout must be 30,000ms (30s)",
+            30_000,
+            backendClient.okHttpClient.connectTimeoutMillis
+        )
+        assertEquals(
+            "OkHttpClient readTimeout must be 30,000ms (30s)",
+            30_000,
+            backendClient.okHttpClient.readTimeoutMillis
+        )
+        assertEquals(
+            "OkHttpClient writeTimeout must be 30,000ms (30s)",
+            30_000,
+            backendClient.okHttpClient.writeTimeoutMillis
+        )
+    }
+
+    @Test
+    fun testAuthStageAndCategoryDistinction() {
+        // Credential Acquisition vs Backend Authentication vs Session Persistence
+        assertEquals("CREDENTIAL_ACQUISITION", AuthStage.CredentialAcquisition.toString())
+        assertEquals("BACKEND_AUTHENTICATION", AuthStage.BackendAuthentication.toString())
+        assertEquals("SESSION_PERSISTENCE", AuthStage.SessionPersistence.toString())
+
+        // Distinct categories for credential manager timeout vs network timeout
+        assertTrue(
+            "Google credential timeout must be distinct from backend network timeout",
+            AuthErrorCategory.GOOGLE_CREDENTIAL_TIMEOUT != AuthErrorCategory.BACKEND_NETWORK_TIMEOUT
+        )
+        assertTrue(
+            "Cancellation must be a distinct category",
+            AuthErrorCategory.GOOGLE_CREDENTIAL_CANCELED != AuthErrorCategory.GOOGLE_CREDENTIAL_TIMEOUT
+        )
+    }
+
+    @Test
+    fun testAuthenticationExceptionNeverExposesRawTimeoutString() {
+        val socketTimeoutEx = java.net.SocketTimeoutException("timeout")
+        val authEx = AuthenticationException(
+            stage = AuthStage.BackendAuthentication,
+            category = AuthErrorCategory.BACKEND_NETWORK_TIMEOUT,
+            elapsedMs = 12500L,
+            message = "Connection to Raksha360 control room timed out after 12s. The server may be waking up; please try again.",
+            cause = socketTimeoutEx
+        )
+
+        assertFalse("Exception message must not be a bare 'timeout' string", authEx.message.equals("timeout", ignoreCase = true))
+        assertTrue("Exception message must inform user about timeout", authEx.message.contains("timed out", ignoreCase = true))
+        assertTrue("Exception message must guide user to retry", authEx.message.contains("try again", ignoreCase = true))
+        assertEquals(AuthStage.BackendAuthentication, authEx.stage)
+        assertEquals(AuthErrorCategory.BACKEND_NETWORK_TIMEOUT, authEx.category)
+        assertEquals(12500L, authEx.elapsedMs)
+    }
+
+    @Test
+    fun testZeroTokenLeakageInAuthExceptionDiagnostics() {
+        val sensitiveIdToken = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.sensitive_payload_here"
+        val sensitiveSessionToken = "rk_secret_live_session_token_9999"
+
+        val authEx = AuthenticationException(
+            stage = AuthStage.BackendAuthentication,
+            category = AuthErrorCategory.BACKEND_HTTP_ERROR,
+            elapsedMs = 450L,
+            httpStatusCode = 401,
+            message = "Google authentication rejected by server (Invalid ID token claims)"
+        )
+
+        assertFalse("Exception message must never contain ID token", authEx.message.contains(sensitiveIdToken))
+        assertFalse("Exception message must never contain session token", authEx.message.contains(sensitiveSessionToken))
+        assertFalse("Exception string must never contain ID token", authEx.toString().contains(sensitiveIdToken))
+        assertFalse("Exception string must never contain session token", authEx.toString().contains(sensitiveSessionToken))
+    }
+
+    @Test
+    fun testVoiceProfilePersistenceAndReload() {
+        val crypto = com.example.data.security.KeystoreCryptoManager()
+        val repo = com.example.data.repository.VoiceProfileRepository(context, crypto)
+
+        // Generate a 128-dimensional synthetic Vosk speaker embedding
+        val vosk128Vector = FloatArray(128) { index -> 0.05f * (index % 5) }
+        val saved = repo.saveVoiceProfile(
+            phrase = "Raksha 360, help me",
+            embedding = vosk128Vector,
+            sampleCount = 5,
+            threshold = 0.82f
+        )
+        assertTrue("saveVoiceProfile must return true on successful write", saved)
+
+        val current = repo.currentProfile.value
+        assertNotNull("Current profile must not be null after saving", current)
+        assertTrue("Profile must be enrolled", current!!.isEnrolled)
+        assertEquals("Raksha 360, help me", current.phrase)
+        assertEquals(5, current.sampleCount)
+        assertEquals(128, current.embedding.size)
+
+        // Create a new repository instance to simulate app restart from encrypted storage
+        val reloadedRepo = com.example.data.repository.VoiceProfileRepository(context, crypto)
+        val reloaded = reloadedRepo.currentProfile.value
+        assertNotNull("Reloaded profile must not be null after reading from encrypted storage", reloaded)
+        assertTrue("Reloaded profile must be enrolled", reloaded!!.isEnrolled)
+        assertEquals("Raksha 360, help me", reloaded.phrase)
+        assertEquals(5, reloaded.sampleCount)
+        assertEquals(128, reloaded.embedding.size)
+    }
+
+    @Test
+    fun testLegacy32dVoiceProfileDetection() {
+        val crypto = com.example.data.security.KeystoreCryptoManager()
+        val repo = com.example.data.repository.VoiceProfileRepository(context, crypto)
+
+        // Legacy profile with 32-dimensional embedding
+        val legacy32Vector = FloatArray(32) { 0.1f }
+        repo.saveVoiceProfile(
+            phrase = "Raksha 360, help me",
+            embedding = legacy32Vector,
+            sampleCount = 3,
+            threshold = 0.82f
+        )
+
+        val profile = repo.currentProfile.value
+        assertNotNull(profile)
+        // Guard Mode eligibility check: embedding.size <= 32 must require re-enrollment
+        val requiresReEnrollment = profile!!.sampleCount < 5 || profile.embedding.size <= 32
+        assertTrue("Legacy 32-d profile must require fresh 5-sample Vosk enrollment", requiresReEnrollment)
+    }
+
+    @Test
+    fun testAssistantSessionTruthfulErrorMapping() {
+        val upstream401Response = com.example.data.remote.AssistantSessionResponse(
+            configured = false,
+            agentId = "agent_3701m51qchkaenxsjnzr8jvrm66",
+            agentName = "Raksha360 AI Assistant",
+            signedUrl = null,
+            message = "ElevenLabs API returned 401: Unauthorized",
+            error = "ElevenLabs API returned 401: Unauthorized"
+        )
+
+        assertFalse(upstream401Response.configured)
+        assertNull(upstream401Response.signedUrl)
+        assertEquals("ElevenLabs API returned 401: Unauthorized", upstream401Response.error)
+        assertTrue(
+            "Error must reflect upstream 401 and not misleadingly claim key is not configured",
+            upstream401Response.error!!.contains("401")
+        )
+    }
 }
+

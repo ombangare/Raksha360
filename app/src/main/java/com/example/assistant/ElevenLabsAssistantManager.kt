@@ -123,8 +123,9 @@ class ElevenLabsAssistantManager(
                 onSuccess = { session ->
                     if (!session.configured || session.signedUrl.isNullOrBlank()) {
                         _state.value = State.UNCONFIGURED
-                        _errorMessage.value = session.message ?: "ElevenLabs API key is not configured on the backend server."
-                        appendMessage(MessageSender.SYSTEM, "Assistant service is not yet configured on the server. Please add ELEVENLABS_API_KEY to Render environment variables.")
+                        val err = session.error ?: session.message ?: "Safety assistant service is currently unavailable."
+                        _errorMessage.value = err
+                        appendMessage(MessageSender.SYSTEM, err)
                     } else {
                         connectWebSocket(session.signedUrl)
                     }

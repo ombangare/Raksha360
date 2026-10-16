@@ -48,24 +48,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val backendEndpointUrl: StateFlow<String> = app.settingsRepo.policeEndpointUrl
     val backendAuthToken: StateFlow<String> = app.settingsRepo.policeAuthToken
 
-    private val _connectionState = MutableStateFlow<BackendConnectionState>(BackendConnectionState.Connecting)
-    val connectionState: StateFlow<BackendConnectionState> = _connectionState.asStateFlow()
-
-    private var connectionCheckJob: Job? = null
-
-    init {
-        viewModelScope.launch {
-            authState.collect {
-                checkBackendConnection()
-            }
-        }
-        viewModelScope.launch {
-            isDemoMode.collect {
-                checkBackendConnection()
-            }
-        }
-    }
-
     val activeEmergency: StateFlow<EmergencyEventEntity?> = app.emergencyRepo.activeEmergency
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
@@ -96,10 +78,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val policeStations: StateFlow<List<com.example.data.repository.PoliceStationRecord>> = app.policeDirectoryRepo.stations
     val publicHelplines: StateFlow<List<com.example.data.repository.HelplineContact>> = app.policeDirectoryRepo.helplines
 
-    fun searchPoliceStations(query: String) = app.policeDirectoryRepo.search(query)
-    fun findNearestPoliceStation(lat: Double, lon: Double) = app.policeDirectoryRepo.findNearestStation(lat, lon)
-    fun refreshHelplinesFromBackend() = viewModelScope.launch { app.policeDirectoryRepo.refreshHelplinesFromBackend() }
-
     val currentLocation: StateFlow<UserLocation> = app.locationManager.currentLocation
 
     val liveRms: StateFlow<Float> = app.audioRecordManager.liveRmsLevel
@@ -109,6 +87,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val authState: StateFlow<com.example.data.repository.AuthState> = app.authenticationRepo.authState
     val currentUser: com.example.data.repository.UserProfile?
         get() = (authState.value as? com.example.data.repository.AuthState.Authenticated)?.user
+
+    private val _connectionState = MutableStateFlow<BackendConnectionState>(BackendConnectionState.Connecting)
+    val connectionState: StateFlow<BackendConnectionState> = _connectionState.asStateFlow()
+
+    private var connectionCheckJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            authState.collect {
+                checkBackendConnection()
+            }
+        }
+        viewModelScope.launch {
+            isDemoMode.collect {
+                checkBackendConnection()
+            }
+        }
+    }
+
+    fun searchPoliceStations(query: String) = app.policeDirectoryRepo.search(query)
+    fun findNearestPoliceStation(lat: Double, lon: Double) = app.policeDirectoryRepo.findNearestStation(lat, lon)
+    fun refreshHelplinesFromBackend() = viewModelScope.launch { app.policeDirectoryRepo.refreshHelplinesFromBackend() }
 
     suspend fun signInWithGoogle(activity: android.app.Activity): Result<com.example.data.repository.UserProfile> {
         val result = app.authenticationRepo.signInWithGoogle(activity)
@@ -365,12 +365,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startGuardMode() {
-        val profile = voiceProfile.value
-        if (profile == null || !profile.isEnrolled || profile.sampleCount < 5 || profile.embedding.size <= 32) {
-            _testVerificationResult.value = "Voice SOS requires a fresh five-sample enrollment with the new speaker model. Open Manage Voice and record five samples before enabling Guard Mode."
+        val hasMic = androidx.core.content.ContextCompat.checkSelfPermission(
+            app,
+            android.Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!hasMic) {
+            _testVerificationResult.value = "Microphone permission is required to enable Guard Mode."
             app.settingsRepo.setGuardModeEnabled(false)
             return
         }
+
+        val profile = voiceProfile.value
+        if (profile == null || !profile.isEnrolled) {
+            _testVerificationResult.value = "No voice profile enrolled. Open Voice SOS and complete enrollment with 5 voice samples before enabling Guard Mode."
+            app.settingsRepo.setGuardModeEnabled(false)
+            return
+        }
+        if (profile.embedding.size <= 32) {
+            _testVerificationResult.value = "Legacy 32-dimensional voice profile detected. Please re-enroll 5 real samples with the updated Vosk speaker engine."
+            app.settingsRepo.setGuardModeEnabled(false)
+            return
+        }
+        if (profile.sampleCount < 5) {
+            _testVerificationResult.value = "Incomplete voice profile (${profile.sampleCount}/5 samples). Please record all 5 samples before enabling Guard Mode."
+            app.settingsRepo.setGuardModeEnabled(false)
+            return
+        }
+
+        if (!app.voiceModelEngine.preparePhraseEngine()) {
+            _testVerificationResult.value = "Voice SOS models could not be loaded: ${app.voiceModelEngine.modelStatusLabel}"
+            app.settingsRepo.setGuardModeEnabled(false)
+            return
+        }
+
+        _testVerificationResult.value = null
         GuardModeService.start(app)
         app.settingsRepo.setGuardModeEnabled(true)
         app.auditLoggerService.logGuardModeChanged(true, profile.phrase)
@@ -401,10 +429,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Voice test analyzes a real microphone clip locally and never creates an emergency. */
     fun runVoiceSosTestCheck(sample: ShortArray) {
         val profile = voiceProfile.value
-        if (profile == null || !profile.isEnrolled || profile.sampleCount < 5 || profile.embedding.size <= 32) {
-            _testVerificationResult.value = "No compatible Vosk speaker profile. Re-enroll five real samples; the legacy 32-dimensional profile cannot be used by the new engine."
+        if (profile == null || !profile.isEnrolled) {
+            _testVerificationResult.value = "No voice profile enrolled. Open Voice SOS and record 5 samples to enroll."
             return
         }
+        if (profile.embedding.size <= 32) {
+            _testVerificationResult.value = "Legacy 32-dimensional profile detected. Re-enroll 5 real samples with the updated Vosk speaker engine."
+            return
+        }
+        if (profile.sampleCount < 5) {
+            _testVerificationResult.value = "Incomplete voice profile (${profile.sampleCount}/5 samples). Re-enroll all 5 samples."
+            return
+        }
+
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
             val result = app.voiceModelEngine.analyzeSingleSample(sample, profile.phrase, profile.embedding, profile.threshold)
             val phrase = result.phraseResult
@@ -453,9 +490,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    fun saveVoiceProfile(phrase: String, embedding: FloatArray, sampleCount: Int, threshold: Float = 0.82f) {
-        app.voiceProfileRepo.saveVoiceProfile(phrase, embedding, sampleCount, threshold)
-        app.auditLoggerService.logEnrollmentCompleted(sampleCount, threshold)
+    fun saveVoiceProfile(phrase: String, embedding: FloatArray, sampleCount: Int, threshold: Float = 0.82f): Boolean {
+        val success = app.voiceProfileRepo.saveVoiceProfile(phrase, embedding, sampleCount, threshold)
+        if (success) {
+            app.auditLoggerService.logEnrollmentCompleted(sampleCount, threshold)
+        }
+        return success
     }
 
     fun deleteVoiceProfile() {

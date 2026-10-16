@@ -17,8 +17,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -92,6 +94,8 @@ fun AssistantScreen(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFFF8FAFC))
+            .statusBarsPadding()
+            .navigationBarsPadding()
             .testTag("assistant_screen")
     ) {
         // Header
@@ -160,13 +164,13 @@ fun AssistantScreen(
                     Spacer(modifier = Modifier.width(10.dp))
                     Column {
                         Text(
-                            text = "Backend Setup Required",
+                            text = "Assistant Service Status",
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF92400E),
                             fontSize = 13.sp
                         )
                         Text(
-                            text = errorMessage ?: "Set ELEVENLABS_API_KEY on the Render backend to activate real-time voice streaming.",
+                            text = errorMessage ?: "Safety assistant service configuration is pending on the backend server.",
                             color = Color(0xFFB45309),
                             fontSize = 12.sp
                         )

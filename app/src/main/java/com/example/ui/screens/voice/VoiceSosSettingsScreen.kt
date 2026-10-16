@@ -235,6 +235,29 @@ fun VoiceSosSettingsScreen(
                     barColor = SafeGreen,
                     modifier = Modifier.height(38.dp)
                 )
+
+                if (testVerificationResult != null) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                if (testVerificationResult!!.contains("passed", ignoreCase = true)) Color(0xFFE8F5E9)
+                                else Color(0xFFFFEBEE)
+                            )
+                            .padding(10.dp)
+                    ) {
+                        Text(
+                            text = testVerificationResult!!,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = if (testVerificationResult!!.contains("passed", ignoreCase = true)) SafeGreen else EmergencyRed,
+                                fontWeight = FontWeight.Medium,
+                                fontSize = 12.sp
+                            )
+                        )
+                    }
+                }
             }
         }
 
@@ -255,9 +278,10 @@ fun VoiceSosSettingsScreen(
                     iconBg = Color(0xFFE3F2FD),
                     title = "Enrolled Voice",
                     subtitle = when {
-                        voiceProfile == null -> "Not enrolled"
-                        voiceProfile!!.sampleCount < 5 || voiceProfile!!.embedding.size <= 32 -> "Re-enrollment required after voice-engine update"
-                        else -> "Five samples enrolled · threshold needs calibration"
+                        voiceProfile == null || !voiceProfile!!.isEnrolled -> "Not enrolled"
+                        voiceProfile!!.embedding.size <= 32 -> "Legacy 32-d profile · Re-enrollment required"
+                        voiceProfile!!.sampleCount < 5 -> "Incomplete (${voiceProfile!!.sampleCount}/5 samples) · Re-enrollment required"
+                        else -> "Five samples enrolled (128-d Vosk) · Ready for Guard Mode"
                     },
                     actionLabel = "Manage >",
                     onActionClick = { onNavigate(NavRoutes.VOICE_ENROLL) }
@@ -395,7 +419,7 @@ private fun VoiceControlRow(
                         color = TextSecondary,
                         fontSize = 11.sp
                     ),
-                    maxLines = 1
+                    maxLines = 2
                 )
             }
         }

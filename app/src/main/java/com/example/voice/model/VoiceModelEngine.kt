@@ -60,6 +60,7 @@ interface IVoiceModelEngine {
     fun resetPhraseRecognizer() {}
     fun checkAudioQuality(buffer: ShortArray): AudioSampleQuality
     fun extractSpeakerEmbedding(samples: List<ShortArray>): FloatArray
+    fun extractSingleSpeakerVector(buffer: ShortArray): FloatArray = FloatArray(0)
     fun detectEmergencyPhrase(buffer: ShortArray, targetPhrase: String): PhraseDetectionResult
     fun verifySpeaker(buffer: ShortArray, enrolledEmbedding: FloatArray, threshold: Float): SpeakerVerificationResult
 }
@@ -186,13 +187,17 @@ class VoiceModelEngine(private val context: Context) : IVoiceModelEngine {
         return AudioSampleQuality(metrics.isAcceptable, metrics.snrDb, metrics.rms, metrics.feedback)
     }
 
+    override fun extractSingleSpeakerVector(buffer: ShortArray): FloatArray {
+        return extractSpeakerVector(buffer)
+    }
+
     /**
      * Creates an averaged, L2-normalized Vosk speaker embedding from actual captured samples.
      * Returns an empty vector if a model is absent or the sample is too short/low quality.
      */
     override fun extractSpeakerEmbedding(samples: List<ShortArray>): FloatArray {
         if (samples.isEmpty() || !preparePhraseEngine()) return FloatArray(0)
-        val vectors = samples.mapNotNull { sample -> extractSpeakerVector(sample) }
+        val vectors = samples.map { sample -> extractSpeakerVector(sample) }.filter { it.isNotEmpty() }
         if (vectors.isEmpty()) return FloatArray(0)
         val dimension = vectors.first().size
         if (dimension == 0 || vectors.any { it.size != dimension }) return FloatArray(0)

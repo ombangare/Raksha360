@@ -202,7 +202,20 @@ fun SignInScreen(
                                         onSignInSuccess()
                                     },
                                     onFailure = { error ->
-                                        errorMessage = error.localizedMessage ?: "Google Sign-In failed"
+                                        errorMessage = when {
+                                            error is com.example.data.repository.AuthenticationException -> {
+                                                if (error.category == com.example.data.repository.AuthErrorCategory.GOOGLE_CREDENTIAL_CANCELED) {
+                                                    null
+                                                } else {
+                                                    error.message
+                                                }
+                                            }
+                                            error.localizedMessage?.trim()?.equals("timeout", ignoreCase = true) == true ||
+                                            error.message?.trim()?.equals("timeout", ignoreCase = true) == true -> {
+                                                "Connection to Raksha360 control room timed out. The server may be waking up; please try again."
+                                            }
+                                            else -> error.localizedMessage ?: "Google Sign-In failed"
+                                        }
                                     }
                                 )
                             }

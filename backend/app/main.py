@@ -2327,18 +2327,39 @@ async def receive_trusted_contact_alert(
 # ---------- ElevenLabs Assistant Signed-URL Credentials Endpoint ----------
 @app.get("/api/v1/assistant/session", dependencies=[Depends(require_any_api_client)])
 async def get_assistant_session() -> dict[str, Any]:
-    agent_id = os.getenv("ELEVENLABS_AGENT_ID", "agent_3701m51qchkaenxsjnzr8jvrm66").strip()
-    api_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
+    raw_agent_id = (
+        os.getenv("ELEVENLABS_AGENT_ID")
+        or os.getenv("ELEVEN_LABS_AGENT_ID")
+        or os.getenv("ELEVENLABS_CONVAI_AGENT_ID")
+        or "agent_3701m51qchkaenxsjnzr8jvrm66"
+    )
+    raw_api_key = (
+        os.getenv("ELEVENLABS_API_KEY")
+        or os.getenv("ELEVEN_LABS_API_KEY")
+        or os.getenv("ELEVENLABS_KEY")
+        or ""
+    )
+    agent_id = raw_agent_id.strip().strip("\"' \t\r\n")
+    api_key = raw_api_key.strip().strip("\"' \t\r\n")
+
+    diagnostics = {
+        "apiKeyPresent": bool(api_key),
+        "agentIdPresent": bool(agent_id),
+        "agentId": agent_id,
+    }
+
     if not api_key:
         return {
             "configured": False,
             "agentId": agent_id,
             "agentName": "Raksha360 AI Assistant",
             "signedUrl": None,
+            "errorType": "MISSING_CREDENTIALS",
             "message": "ElevenLabs API key is not configured on the backend server. Set ELEVENLABS_API_KEY in Render environment.",
+            "diagnostics": diagnostics,
         }
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             res = await client.get(
                 "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url",
                 params={"agent_id": agent_id},
@@ -2351,16 +2372,66 @@ async def get_assistant_session() -> dict[str, Any]:
                     "agentId": agent_id,
                     "agentName": "Raksha360 AI Assistant",
                     "signedUrl": data.get("signed_url"),
+                    "diagnostics": diagnostics,
                 }
-            else:
-                logger.warning("ElevenLabs signed URL request failed: %s %s", res.status_code, res.text)
+            elif res.status_code in (401, 403):
+                logger.warning("ElevenLabs signed URL auth failed: HTTP %s", res.status_code)
+                error_msg = (
+                    "Upstream ElevenLabs authentication rejected (HTTP 401). Please verify that the ELEVENLABS_API_KEY in Render is valid and active."
+                    if res.status_code == 401
+                    else "Upstream ElevenLabs access forbidden (HTTP 403). Check agent permissions."
+                )
                 return {
                     "configured": False,
                     "agentId": agent_id,
                     "agentName": "Raksha360 AI Assistant",
                     "signedUrl": None,
-                    "error": f"ElevenLabs API returned {res.status_code}",
+                    "errorType": "INVALID_UPSTREAM_CREDENTIALS" if res.status_code == 401 else "INSUFFICIENT_PERMISSIONS",
+                    "error": error_msg,
+                    "message": error_msg,
+                    "upstreamStatus": res.status_code,
+                    "diagnostics": diagnostics,
                 }
+            elif res.status_code == 404:
+                logger.warning("ElevenLabs agent not found: %s", agent_id)
+                error_msg = f"ElevenLabs agent '{agent_id}' was not found (HTTP 404). Please verify ELEVENLABS_AGENT_ID."
+                return {
+                    "configured": False,
+                    "agentId": agent_id,
+                    "agentName": "Raksha360 AI Assistant",
+                    "signedUrl": None,
+                    "errorType": "AGENT_NOT_FOUND",
+                    "error": error_msg,
+                    "message": error_msg,
+                    "upstreamStatus": res.status_code,
+                    "diagnostics": diagnostics,
+                }
+            else:
+                logger.warning("ElevenLabs signed URL request failed: HTTP %s", res.status_code)
+                error_msg = f"ElevenLabs API returned HTTP {res.status_code}."
+                return {
+                    "configured": False,
+                    "agentId": agent_id,
+                    "agentName": "Raksha360 AI Assistant",
+                    "signedUrl": None,
+                    "errorType": "UPSTREAM_SERVICE_ERROR",
+                    "error": error_msg,
+                    "message": error_msg,
+                    "upstreamStatus": res.status_code,
+                    "diagnostics": diagnostics,
+                }
+    except httpx.TimeoutException as exc:
+        logger.warning("ElevenLabs signed URL timeout: %s", exc)
+        return {
+            "configured": False,
+            "agentId": agent_id,
+            "agentName": "Raksha360 AI Assistant",
+            "signedUrl": None,
+            "errorType": "NETWORK_TIMEOUT",
+            "error": "Connection to ElevenLabs API timed out.",
+            "message": "Connection to ElevenLabs API timed out.",
+            "diagnostics": diagnostics,
+        }
     except Exception as exc:
         logger.error("ElevenLabs signed URL exception: %s", exc)
         return {
@@ -2368,7 +2439,10 @@ async def get_assistant_session() -> dict[str, Any]:
             "agentId": agent_id,
             "agentName": "Raksha360 AI Assistant",
             "signedUrl": None,
-            "error": "Failed to connect to ElevenLabs API",
+            "errorType": "UPSTREAM_SERVICE_ERROR",
+            "error": "Failed to connect to ElevenLabs API.",
+            "message": "Failed to connect to ElevenLabs API.",
+            "diagnostics": diagnostics,
         }
 
 

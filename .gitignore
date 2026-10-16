@@ -46,3 +46,7 @@ distribution/*.apk
 distribution/*.aab
 *.zip
 
+# Local scratch and offline models
+.local/
+app/src/main/assets/vosk-model-*
+

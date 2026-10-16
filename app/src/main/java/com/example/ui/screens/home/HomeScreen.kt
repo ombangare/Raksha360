@@ -6,6 +6,12 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -17,6 +23,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -47,6 +54,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -56,9 +64,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -103,16 +114,20 @@ fun HomeScreen(
         }
     }
 
-    Column(
+    Box(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFFF8FAFC))
-            .statusBarsPadding()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 18.dp, vertical = 14.dp)
-            .padding(bottom = 80.dp)
     ) {
-        // 1. Top Profile Bar
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 18.dp, vertical = 14.dp)
+                .padding(bottom = 96.dp)
+        ) {
+            // 1. Top Profile Bar
         val currentUser = viewModel.currentUser
         val displayName = currentUser?.displayName?.trim()?.ifBlank { "User" } ?: "User"
         val subtitleText = if (currentUser?.isDemoUser == true) "Demo Mode • Stay Safe" else "Stay Safe, Stay Strong"
@@ -299,80 +314,6 @@ fun HomeScreen(
                         )
                     }
                 }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        // 2B. AI Voice Safety Assistant Card
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onNavigate(NavRoutes.ASSISTANT) }
-                .testTag("ai_assistant_card"),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF6FF)),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                    Box(
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(ShieldBlue),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Mic,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "Raksha360 AI Assistant",
-                                style = MaterialTheme.typography.titleSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = NavyDark,
-                                    fontSize = 15.sp
-                                )
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(ShieldBlue.copy(alpha = 0.15f))
-                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                            ) {
-                                Text("ElevenLabs", color = ShieldBlue, fontWeight = FontWeight.Bold, fontSize = 9.sp)
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Conversational safety guide · Tap to speak",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = TextSecondary,
-                                fontSize = 12.sp
-                            )
-                        )
-                    }
-                }
-                Icon(
-                    imageVector = Icons.Default.ChevronRight,
-                    contentDescription = null,
-                    tint = ShieldBlue,
-                    modifier = Modifier.size(16.dp)
-                )
             }
         }
 
@@ -774,6 +715,16 @@ fun HomeScreen(
 
         Spacer(modifier = Modifier.height(24.dp))
     }
+
+    // Floating circular safety assistant microphone button
+    FloatingAssistantMicrophoneButton(
+        onClick = { onNavigate(NavRoutes.ASSISTANT) },
+        modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .padding(end = 20.dp, bottom = 20.dp)
+            .navigationBarsPadding()
+    )
+    }
 }
 
 @Composable
@@ -831,6 +782,73 @@ private fun QuickActionSquare(
                         fontSize = 10.sp
                     ),
                     maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FloatingAssistantMicrophoneButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "mic_idle_pulse")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.05f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse_scale"
+    )
+    val haloAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.10f,
+        targetValue = 0.25f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "halo_alpha"
+    )
+
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.Center
+    ) {
+        // Outer subtle pulsing halo for idle breathing effect
+        Box(
+            modifier = Modifier
+                .size(68.dp)
+                .scale(pulseScale)
+                .clip(CircleShape)
+                .background(ShieldBlue.copy(alpha = haloAlpha))
+        )
+
+        // Floating circular action button
+        Surface(
+            onClick = onClick,
+            shape = CircleShape,
+            color = ShieldBlue,
+            shadowElevation = 6.dp,
+            tonalElevation = 2.dp,
+            modifier = Modifier
+                .size(56.dp)
+                .testTag("floating_assistant_button")
+                .semantics {
+                    contentDescription = "Safety Assistant Voice Guide"
+                }
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Mic,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(28.dp)
                 )
             }
         }

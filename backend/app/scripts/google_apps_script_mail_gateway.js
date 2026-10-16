@@ -27,10 +27,21 @@ function doPost(e) {
       return createJsonResponse({ status: "error", error: "SHARED_SECRET property not configured in Google Apps Script" }, 500);
     }
 
-    // 1. Secret Authentication
+    // 1. Secret & HMAC-SHA256 Signature Authentication
     var providedSecret = payload.secret || "";
     if (providedSecret !== expectedSecret) {
       return createJsonResponse({ status: "error", error: "Unauthorized: Invalid secret token" }, 401);
+    }
+
+    if (payload.signature && payload.timestamp && payload.nonce && payload.recipient && payload.eventId) {
+      var messageToSign = payload.timestamp + ":" + payload.nonce + ":" + payload.recipient + ":" + payload.eventId;
+      var rawSignature = Utilities.computeHmacSha256Signature(messageToSign, expectedSecret);
+      var computedSig = rawSignature.map(function(byte) {
+        return ('0' + (byte & 0xFF).toString(16)).slice(-2);
+      }).join('');
+      if (computedSig !== payload.signature) {
+        return createJsonResponse({ status: "error", error: "Unauthorized: HMAC signature mismatch" }, 401);
+      }
     }
 
     // 2. Replay Protection: Timestamp freshness check (must be within 5 minutes)
