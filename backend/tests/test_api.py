@@ -1057,5 +1057,98 @@ def test_google_auth_missing_client_id_configuration(client: TestClient, monkeyp
     assert "Server Google OAuth audience is not configured" in resp.json()["detail"]
 
 
+def test_authenticated_user_session_authorizes_device_endpoints(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """Verifies that an authenticated citizen user session token authorizes device calls
+    without requiring manual entry of a static device token."""
+    mock_claims = {
+        "iss": "https://accounts.google.com",
+        "sub": "user_device_auth_sub_123",
+        "email": "user.device@example.com",
+        "name": "User Device Tester",
+        "aud": "mock-web-client-id.apps.googleusercontent.com",
+    }
+    monkeypatch.setattr(api.google_id_token, "verify_oauth2_token", lambda *args, **kwargs: mock_claims)
+    monkeypatch.setattr(api, "get_expected_google_client_id", lambda: "mock-web-client-id.apps.googleusercontent.com")
+
+    # 1. User signs in with Google
+    auth_resp = client.post("/api/v1/auth/google", json={"idToken": "fake-jwt-token"})
+    assert auth_resp.status_code == 200
+    session_token = auth_resp.json()["sessionToken"]
+    user_headers = {"Authorization": f"Bearer {session_token}"}
+
+    # 2. Check /device/session with user session token
+    dev_session_resp = client.post("/api/v1/device/session", headers=user_headers)
+    assert dev_session_resp.status_code == 200
+    assert dev_session_resp.json()["authenticated"] is True
+
+    # 3. Post emergency event with user session token
+    event_payload = {
+        "eventId": f"USER-EVENT-{uuid.uuid4()}",
+        "triggerType": "MANUAL_SOS",
+        "latitude": 21.1458,
+        "longitude": 79.0882,
+        "isDemoMode": False,
+    }
+    event_resp = client.post("/api/v1/emergency-events", headers=user_headers, json=event_payload)
+    assert event_resp.status_code == 200
+    assert event_resp.json()["status"] == "RECEIVED_IN_CONTROL_ROOM_QUEUE"
+
+    # 4. Post device heartbeat with user session token
+    heartbeat_payload = {
+        "deviceId": "dev-phone-99",
+        "timestamp": api.utc_ms(),
+        "monitoringEnabled": True,
+        "offlineLocationEmailConsent": False,
+        "latitude": 21.1458,
+        "longitude": 79.0882,
+        "contacts": [],
+    }
+    heartbeat_resp = client.post("/api/v1/device/heartbeat", headers=user_headers, json=heartbeat_payload)
+    assert heartbeat_resp.status_code == 200
+    assert heartbeat_resp.json()["status"] == "ONLINE"
+
+    # 5. Post incident report with user session token
+    report_payload = {
+        "title": "Street Harassment",
+        "category": "Harassment",
+        "description": "Report submitted via citizen session",
+        "isDemoMode": False,
+    }
+    report_resp = client.post("/api/v1/reports", headers=user_headers, json=report_payload)
+    assert report_resp.status_code == 200
+    assert report_resp.json()["status"] == "New"
+
+
+def test_device_endpoints_reject_invalid_and_expired_user_sessions(client: TestClient):
+    # Missing auth
+    no_auth = client.post("/api/v1/device/session")
+    assert no_auth.status_code == 401
+
+    # Tampered bearer
+    tampered = client.post("/api/v1/device/session", headers={"Authorization": "Bearer rk_tampered_bearer_token"})
+    assert tampered.status_code == 401
+    assert "A valid Raksha360 device bearer token or authenticated user session is required" in tampered.json()["detail"]
+
+    # Expired session
+    now = api.utc_ms()
+    raw_exp = "rk_expired_device_token"
+    token_hash = api.hash_session_token(raw_exp)
+    with api.db() as conn:
+        conn.execute(
+            """INSERT INTO users (uid, email, display_name, photo_url, role, created_at, last_login_at)
+               VALUES ('exp_uid_device', 'exp_device@test.com', 'Exp Device', NULL, 'CITIZEN_USER', ?, ?)""",
+            (now, now),
+        )
+        conn.execute(
+            """INSERT INTO user_sessions (token_hash, uid, created_at, expires_at, is_active)
+               VALUES (?, 'exp_uid_device', ?, ?, 1)""",
+            (token_hash, now - 60_000, now - 10_000),
+        )
+
+    expired_resp = client.post("/api/v1/device/session", headers={"Authorization": f"Bearer {raw_exp}"})
+    assert expired_resp.status_code == 401
+
+
+
 
 

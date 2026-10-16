@@ -506,10 +506,42 @@ def constant_time_token_match(candidate: str | None, expected: str) -> bool:
     return bool(candidate) and hmac.compare_digest(candidate, expected)
 
 
-def require_device(authorization: str | None = Header(default=None)) -> None:
+def hash_session_token(token: str) -> str:
+    """Compute deterministic SHA-256 hash of a session bearer token for database storage and lookup."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def resolve_session_or_device_token(authorization: str | None) -> str | None:
     bearer = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else None
-    if not constant_time_token_match(bearer, get_device_token()):
-        raise HTTPException(status_code=401, detail="A valid Raksha360 device bearer token is required.")
+    if not bearer:
+        return None
+    # 1. Developer / automated test static device token
+    if constant_time_token_match(bearer, get_device_token()):
+        return "ANDROID_APP"
+    # 2. Authenticated user session token (stored as SHA-256 hash in user_sessions)
+    token_hash = hash_session_token(bearer)
+    now = utc_ms()
+    try:
+        with db() as conn:
+            row = conn.execute(
+                """SELECT u.uid, u.email
+                   FROM user_sessions s
+                   JOIN users u ON s.uid = u.uid
+                   WHERE s.token_hash = ? AND s.is_active = 1 AND s.expires_at > ?""",
+                (token_hash, now),
+            ).fetchone()
+            if row:
+                return f"USER:{row['uid']}"
+    except Exception as exc:
+        logger.warning("Error verifying user session bearer token: %s", exc)
+    return None
+
+
+def require_device(authorization: str | None = Header(default=None)) -> str:
+    identity = resolve_session_or_device_token(authorization)
+    if not identity:
+        raise HTTPException(status_code=401, detail="A valid Raksha360 device bearer token or authenticated user session is required.")
+    return identity
 
 
 def require_dashboard(x_dashboard_token: str | None = Header(default=None)) -> None:
@@ -521,12 +553,12 @@ def require_any_api_client(
     authorization: str | None = Header(default=None),
     x_dashboard_token: str | None = Header(default=None),
 ) -> str:
-    bearer = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else None
-    if constant_time_token_match(bearer, get_device_token()):
-        return "ANDROID_APP"
     if constant_time_token_match(x_dashboard_token, get_dashboard_token()):
         return "POLICE_DASHBOARD"
-    raise HTTPException(status_code=401, detail="A valid device or dashboard token is required.")
+    identity = resolve_session_or_device_token(authorization)
+    if identity:
+        return identity
+    raise HTTPException(status_code=401, detail="A valid device, session, or dashboard token is required.")
 
 
 def create_audit(actor: str, action: str, target_id: str | None, message: str, is_demo: bool) -> None:
@@ -784,11 +816,6 @@ def verify_dashboard_session(payload: DashboardSessionRequest) -> dict[str, Any]
 def verify_device_session() -> dict[str, Any]:
     """Verify that the Android app can authenticate to this local backend."""
     return {"authenticated": True, "role": "RAKSHA360_DEVICE", "service": "local-control-room-api", "time": now_iso()}
-
-
-def hash_session_token(token: str) -> str:
-    """Compute deterministic SHA-256 hash of a session bearer token for database storage and lookup."""
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def get_expected_google_client_id() -> str | None:
