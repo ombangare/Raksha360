@@ -255,3 +255,129 @@ def test_real_postgres_health_endpoint_returns_503_on_simulated_db_failure(real_
     assert "password" not in str(data).lower()
     assert "supabase" not in str(data).lower()
     assert "5432" not in str(data)
+
+
+def test_real_postgres_google_auth_and_hashed_session_lifecycle(real_postgres_database, monkeypatch: pytest.MonkeyPatch):
+    """Verifies complete Google authentication lifecycle on real PostgreSQL:
+    - User upsert into public.users
+    - Storage of ONLY SHA-256 hashed session token in public.user_sessions (never plaintext)
+    - Session resolution with raw bearer token
+    - Signout revokes session (is_active = 0)
+    - Subsequent resolution fails with HTTP 401
+    """
+    mock_claims = {
+        "iss": "https://accounts.google.com",
+        "sub": "pg-google-uid-88392019",
+        "email": "postgres.safety.user@example.com",
+        "name": "Postgres Safety User",
+        "picture": "https://lh3.googleusercontent.com/a/pg_photo.jpg",
+        "aud": "mock-web-client-id.apps.googleusercontent.com",
+    }
+    monkeypatch.setattr(api.google_id_token, "verify_oauth2_token", lambda *args, **kwargs: mock_claims)
+    monkeypatch.setattr(api, "get_expected_google_client_id", lambda: "mock-web-client-id.apps.googleusercontent.com")
+
+    client = TestClient(api.app)
+    resp = client.post("/api/v1/auth/google", json={"idToken": "valid-pg-jwt-token"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["authenticated"] is True
+    assert data["uid"] == "pg-google-uid-88392019"
+    assert data["email"] == "postgres.safety.user@example.com"
+    raw_token = data["sessionToken"]
+    assert raw_token.startswith("rk_")
+
+    import hashlib
+    expected_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+    # Verify on PostgreSQL that token_hash is stored and raw_token is NOT stored
+    with api.db() as conn:
+        session_row = conn.execute("SELECT * FROM user_sessions WHERE token_hash = ?", (expected_hash,)).fetchone()
+        assert session_row is not None
+        assert session_row["token_hash"] == expected_hash
+        assert session_row["uid"] == "pg-google-uid-88392019"
+        assert session_row["is_active"] == 1
+
+        raw_in_db = conn.execute("SELECT COUNT(*) FROM user_sessions WHERE token_hash = ?", (raw_token,)).fetchone()[0]
+        assert raw_in_db == 0
+
+        user_row = conn.execute("SELECT * FROM users WHERE uid = ?", ("pg-google-uid-88392019",)).fetchone()
+        assert user_row is not None
+        assert user_row["email"] == "postgres.safety.user@example.com"
+        assert user_row["role"] == "CITIZEN_USER"
+
+    # Verify session lookup with Bearer header
+    session_resp = client.get("/api/v1/auth/session", headers={"Authorization": f"Bearer {raw_token}"})
+    assert session_resp.status_code == 200
+    assert session_resp.json()["email"] == "postgres.safety.user@example.com"
+
+    # Verify signout invalidates the session
+    signout_resp = client.post("/api/v1/auth/signout", headers={"Authorization": f"Bearer {raw_token}"})
+    assert signout_resp.status_code == 200
+    assert signout_resp.json()["signedOut"] is True
+
+    # Re-verify session lookup returns 401
+    post_signout = client.get("/api/v1/auth/session", headers={"Authorization": f"Bearer {raw_token}"})
+    assert post_signout.status_code == 401
+
+
+def test_real_postgres_session_expiration_rejection(real_postgres_database):
+    """Verifies that expired sessions on PostgreSQL are rejected with HTTP 401."""
+    import hashlib
+    client = TestClient(api.app)
+    raw_expired = "rk_expired_pg_session_token"
+    token_hash = hashlib.sha256(raw_expired.encode("utf-8")).hexdigest()
+    now = api.utc_ms()
+    past_expiry = now - 30_000
+
+    with api.db() as conn:
+        conn.execute(
+            """INSERT INTO users (uid, email, display_name, photo_url, role, created_at, last_login_at)
+               VALUES ('pg_exp_uid', 'expired_pg@test.com', 'Expired PG User', NULL, 'CITIZEN_USER', ?, ?)""",
+            (now, now),
+        )
+        conn.execute(
+            """INSERT INTO user_sessions (token_hash, uid, created_at, expires_at, is_active)
+               VALUES (?, 'pg_exp_uid', ?, ?, 1)""",
+            (token_hash, now - 60_000, past_expiry),
+        )
+
+    resp = client.get("/api/v1/auth/session", headers={"Authorization": f"Bearer {raw_expired}"})
+    assert resp.status_code == 401
+    assert "Session token is invalid or expired" in resp.json()["detail"]
+
+
+def test_real_postgres_tampered_token_rejection(real_postgres_database):
+    """Verifies that tampered or forged Bearer tokens on PostgreSQL return HTTP 401."""
+    client = TestClient(api.app)
+    resp = client.get("/api/v1/auth/session", headers={"Authorization": "Bearer rk_forged_pg_bearer_token"})
+    assert resp.status_code == 401
+    assert "Session token is invalid or expired" in resp.json()["detail"]
+
+
+def test_real_postgres_user_cascade_deletion(real_postgres_database):
+    """Verifies that deleting a user from public.users cascades to public.user_sessions on PostgreSQL."""
+    import hashlib
+    raw_token = "rk_cascade_test_token"
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    now = api.utc_ms()
+
+    with api.db() as conn:
+        conn.execute(
+            """INSERT INTO users (uid, email, display_name, photo_url, role, created_at, last_login_at)
+               VALUES ('pg_cascade_uid', 'cascade@test.com', 'Cascade User', NULL, 'CITIZEN_USER', ?, ?)""",
+            (now, now),
+        )
+        conn.execute(
+            """INSERT INTO user_sessions (token_hash, uid, created_at, expires_at, is_active)
+               VALUES (?, 'pg_cascade_uid', ?, ?, 1)""",
+            (token_hash, now, now + 100_000),
+        )
+        # Verify session exists
+        assert conn.execute("SELECT COUNT(*) FROM user_sessions WHERE token_hash = ?", (token_hash,)).fetchone()[0] == 1
+
+        # Delete user
+        conn.execute("DELETE FROM users WHERE uid = 'pg_cascade_uid'")
+
+        # Verify session was cascade deleted
+        assert conn.execute("SELECT COUNT(*) FROM user_sessions WHERE token_hash = ?", (token_hash,)).fetchone()[0] == 0
+

@@ -178,3 +178,24 @@ CREATE TABLE IF NOT EXISTS offline_email_deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_offline_email_delivery_episode
     ON offline_email_deliveries(device_id, incident_id, status);
+
+CREATE TABLE IF NOT EXISTS users (
+    uid TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    photo_url TEXT,
+    role TEXT NOT NULL DEFAULT 'CITIZEN_USER',
+    created_at BIGINT NOT NULL,
+    last_login_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+    token_hash TEXT PRIMARY KEY,
+    uid TEXT NOT NULL REFERENCES users(uid) ON DELETE CASCADE,
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_lookup ON user_sessions(token_hash, is_active, expires_at);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_uid ON user_sessions(uid);

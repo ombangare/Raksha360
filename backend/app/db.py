@@ -97,6 +97,9 @@ class DatabaseRow(dict):
             return self._values[key]
         return super().__getitem__(key)
 
+    def __iter__(self) -> Generator[Any, None, None]:
+        return iter(self._values)
+
 
 class EmptyCursor:
     """Mock cursor for statements (like PRAGMA on PostgreSQL) that require no execution."""

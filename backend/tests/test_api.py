@@ -913,5 +913,149 @@ def test_station_upsert_preserves_verified_coordinates_on_portable_syntax():
         assert row["longitude"] == 79.0882
 
 
+def test_google_auth_successful_verification(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    mock_claims = {
+        "iss": "https://accounts.google.com",
+        "sub": "google-uid-1002938475",
+        "email": "sarah.safety@example.com",
+        "name": "Sarah Safety",
+        "picture": "https://lh3.googleusercontent.com/a/photo.jpg",
+        "aud": "mock-web-client-id.apps.googleusercontent.com",
+    }
+    monkeypatch.setattr(api.google_id_token, "verify_oauth2_token", lambda *args, **kwargs: mock_claims)
+
+    resp = client.post("/api/v1/auth/google", json={"idToken": "valid-synthetic-jwt-token-for-testing"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["authenticated"] is True
+    assert data["uid"] == "google-uid-1002938475"
+    assert data["email"] == "sarah.safety@example.com"
+    assert data["displayName"] == "Sarah Safety"
+    assert data["photoUrl"] == "https://lh3.googleusercontent.com/a/photo.jpg"
+    assert data["role"] == "CITIZEN_USER"
+    assert data["role"] == "CITIZEN_USER"
+    assert data["sessionToken"].startswith("rk_")
+    assert data["expiresAt"] > 1700000000000
+
+    # Verify that the database stores ONLY the SHA-256 hash and NEVER the raw session token
+    import hashlib
+    expected_hash = hashlib.sha256(data["sessionToken"].encode("utf-8")).hexdigest()
+    with api.db() as conn:
+        row = conn.execute("SELECT * FROM user_sessions WHERE token_hash = ?", (expected_hash,)).fetchone()
+        assert row is not None
+        assert row["token_hash"] == expected_hash
+        assert row["uid"] == "google-uid-1002938475"
+        assert row["is_active"] == 1
+        # Raw session token must NOT exist in the database!
+        raw_match = conn.execute("SELECT COUNT(*) FROM user_sessions WHERE token_hash = ?", (data["sessionToken"],)).fetchone()[0]
+        assert raw_match == 0
+
+    # Verify session is retrievable via GET /api/v1/auth/session
+    session_resp = client.get("/api/v1/auth/session", headers={"Authorization": f"Bearer {data['sessionToken']}"})
+    assert session_resp.status_code == 200
+    session_data = session_resp.json()
+    assert session_data["email"] == "sarah.safety@example.com"
+    assert session_data["displayName"] == "Sarah Safety"
+
+    # Verify signout invalidates session
+    signout_resp = client.post("/api/v1/auth/signout", headers={"Authorization": f"Bearer {data['sessionToken']}"})
+    assert signout_resp.status_code == 200
+    assert signout_resp.json()["signedOut"] is True
+
+    # Confirm database row is_active is now 0
+    with api.db() as conn:
+        inactive_row = conn.execute("SELECT * FROM user_sessions WHERE token_hash = ?", (expected_hash,)).fetchone()
+        assert inactive_row["is_active"] == 0
+
+    # Re-checking session after signout must yield 401
+    after_signout = client.get("/api/v1/auth/session", headers={"Authorization": f"Bearer {data['sessionToken']}"})
+    assert after_signout.status_code == 401
+
+
+def test_session_token_tampered_or_invalid_bearer_rejection(client: TestClient):
+    # Calling auth/session with a non-existent or tampered token returns 401
+    resp = client.get("/api/v1/auth/session", headers={"Authorization": "Bearer rk_fake_tampered_token_xyz"})
+    assert resp.status_code == 401
+    assert "Session token is invalid or expired" in resp.json()["detail"]
+
+
+def test_session_token_expired_rejection(client: TestClient):
+    import hashlib
+    raw_token = "rk_expired_test_token_12345"
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    now = api.utc_ms()
+    past_expiry = now - 60_000  # Expired 1 minute ago
+
+    with api.db() as conn:
+        conn.execute(
+            """INSERT INTO users (uid, email, display_name, photo_url, role, created_at, last_login_at)
+               VALUES ('expired_uid_99', 'expired@test.com', 'Expired Tester', NULL, 'CITIZEN_USER', ?, ?)""",
+            (now, now),
+        )
+        conn.execute(
+            """INSERT INTO user_sessions (token_hash, uid, created_at, expires_at, is_active)
+               VALUES (?, 'expired_uid_99', ?, ?, 1)""",
+            (token_hash, now - 120_000, past_expiry),
+        )
+
+    # Calling auth/session with the expired raw token must be rejected with 401
+    resp = client.get("/api/v1/auth/session", headers={"Authorization": f"Bearer {raw_token}"})
+    assert resp.status_code == 401
+    assert "Session token is invalid or expired" in resp.json()["detail"]
+
+
+def test_google_auth_invalid_token_rejection(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    def mock_fail(*args, **kwargs):
+        raise ValueError("Invalid signature on token")
+
+    monkeypatch.setattr(api.google_id_token, "verify_oauth2_token", mock_fail)
+
+    resp = client.post("/api/v1/auth/google", json={"idToken": "tampered-or-invalid-token"})
+    assert resp.status_code == 401
+    assert "Invalid signature" in resp.json()["detail"]
+
+
+def test_google_auth_expired_token_rejection(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    def mock_expired(*args, **kwargs):
+        raise ValueError("Token expired")
+
+    monkeypatch.setattr(api.google_id_token, "verify_oauth2_token", mock_expired)
+
+    resp = client.post("/api/v1/auth/google", json={"idToken": "expired-jwt-token"})
+    assert resp.status_code == 401
+    assert "Token expired" in resp.json()["detail"]
+
+
+def test_google_auth_invalid_issuer_rejection(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    mock_bad_issuer = {
+        "iss": "https://untrusted-auth-server.bad",
+        "sub": "bad-user-id",
+        "email": "hacker@evil.com",
+    }
+    monkeypatch.setattr(api.google_id_token, "verify_oauth2_token", lambda *args, **kwargs: mock_bad_issuer)
+
+    resp = client.post("/api/v1/auth/google", json={"idToken": "token-from-wrong-issuer"})
+    assert resp.status_code == 401
+    assert "Invalid token issuer" in resp.json()["detail"]
+
+
+def test_google_auth_service_unavailable(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    def mock_network_err(*args, **kwargs):
+        raise ConnectionError("Google certs server unreachable")
+
+    monkeypatch.setattr(api.google_id_token, "verify_oauth2_token", mock_network_err)
+
+    resp = client.post("/api/v1/auth/google", json={"idToken": "any-token-while-offline"})
+    assert resp.status_code == 503
+    assert "Unable to verify token" in resp.json()["detail"]
+
+
+def test_google_auth_missing_client_id_configuration(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(api, "get_expected_google_client_id", lambda: None)
+    resp = client.post("/api/v1/auth/google", json={"idToken": "some-id-token"})
+    assert resp.status_code == 500
+    assert "Server Google OAuth audience is not configured" in resp.json()["detail"]
+
+
 
 

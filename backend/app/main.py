@@ -21,6 +21,8 @@ from typing import Any, Literal
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
 from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger("raksha360.api")
@@ -388,6 +390,25 @@ def initialize_database() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_offline_email_delivery_episode
                 ON offline_email_deliveries(device_id, incident_id, status);
+            CREATE TABLE IF NOT EXISTS users (
+                uid TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                photo_url TEXT,
+                role TEXT NOT NULL DEFAULT 'CITIZEN_USER',
+                created_at INTEGER NOT NULL,
+                last_login_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                token_hash TEXT PRIMARY KEY,
+                uid TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_user_sessions_lookup ON user_sessions(token_hash, is_active, expires_at);
+            CREATE INDEX IF NOT EXISTS idx_user_sessions_uid ON user_sessions(uid);
             """
             )
             try:
@@ -673,6 +694,22 @@ class DashboardSessionRequest(BaseModel):
     token: str = Field(min_length=1, max_length=500)
 
 
+class GoogleAuthRequest(BaseModel):
+    idToken: str = Field(min_length=10, max_length=4096)
+    nonce: str | None = Field(default=None, max_length=256)
+
+
+class GoogleAuthResponse(BaseModel):
+    authenticated: bool = True
+    uid: str
+    email: str
+    displayName: str
+    photoUrl: str | None = None
+    role: str = "CITIZEN_USER"
+    sessionToken: str
+    expiresAt: int
+
+
 # ---------- Common mappings ----------
 def severity_for(trigger: str) -> str:
     key = trigger.upper()
@@ -747,6 +784,183 @@ def verify_dashboard_session(payload: DashboardSessionRequest) -> dict[str, Any]
 def verify_device_session() -> dict[str, Any]:
     """Verify that the Android app can authenticate to this local backend."""
     return {"authenticated": True, "role": "RAKSHA360_DEVICE", "service": "local-control-room-api", "time": now_iso()}
+
+
+def hash_session_token(token: str) -> str:
+    """Compute deterministic SHA-256 hash of a session bearer token for database storage and lookup."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def get_expected_google_client_id() -> str | None:
+    client_id = os.getenv("GOOGLE_CLIENT_ID", os.getenv("GOOGLE_WEB_CLIENT_ID", "")).strip()
+    if not client_id:
+        local_props_path = ROOT_DIR.parent / "local.properties"
+        if local_props_path.is_file():
+            try:
+                for line in local_props_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line.startswith("google.web.client.id="):
+                        client_id = line.split("=", 1)[1].strip()
+                        break
+            except Exception:
+                pass
+    return client_id if client_id else None
+
+
+def verify_google_token_claims(token: str, nonce: str | None = None) -> dict[str, Any]:
+    expected_client_id = get_expected_google_client_id()
+    if not expected_client_id:
+        logger.error("GOOGLE_CLIENT_ID is not configured on the backend server.")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Server Google OAuth audience is not configured (missing GOOGLE_CLIENT_ID).",
+        )
+    try:
+        claims = google_id_token.verify_oauth2_token(
+            token,
+            google_requests.Request(),
+            audience=expected_client_id,
+        )
+    except ValueError as exc:
+        logger.warning("Google ID token verification failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Google ID token verification failed: {exc}",
+        )
+    except Exception as exc:
+        logger.error("Error communicating with Google identity services: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to verify token with Google identity services.",
+        )
+
+    issuer = claims.get("iss", "")
+    if issuer not in ("accounts.google.com", "https://accounts.google.com"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid token issuer: {issuer}",
+        )
+
+    sub = claims.get("sub")
+    email = claims.get("email")
+    if not sub or not email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is missing required identity claims.",
+        )
+
+    if nonce:
+        token_nonce = claims.get("nonce")
+        if not token_nonce or token_nonce != nonce:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token nonce mismatch.",
+            )
+
+    return claims
+
+
+@app.post("/api/v1/auth/google", response_model=GoogleAuthResponse)
+def authenticate_with_google(payload: GoogleAuthRequest) -> dict[str, Any]:
+    claims = verify_google_token_claims(payload.idToken, payload.nonce)
+    uid = str(claims["sub"])
+    email = str(claims["email"]).strip().lower()
+    name = str(claims.get("name") or claims.get("given_name") or email.split("@")[0])
+    photo_url = claims.get("picture")
+
+    now = utc_ms()
+    session_lifetime_ms = 7 * 24 * 3600 * 1000  # 7 days
+    expires_at = now + session_lifetime_ms
+    raw_session_token = f"rk_{secrets.token_urlsafe(32)}"
+    token_hash = hash_session_token(raw_session_token)
+
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO users (uid, email, display_name, photo_url, role, created_at, last_login_at)
+               VALUES (?, ?, ?, ?, 'CITIZEN_USER', ?, ?)
+               ON CONFLICT(uid) DO UPDATE SET
+                   email = excluded.email,
+                   display_name = excluded.display_name,
+                   photo_url = excluded.photo_url,
+                   last_login_at = excluded.last_login_at""",
+            (uid, email, name, photo_url, now, now),
+        )
+        conn.execute(
+            """INSERT INTO user_sessions (token_hash, uid, created_at, expires_at, is_active)
+               VALUES (?, ?, ?, ?, 1)""",
+            (token_hash, uid, now, expires_at),
+        )
+
+    create_audit(
+        actor=email,
+        action="GOOGLE_AUTH_LOGIN",
+        target_id=uid,
+        message=f"Google ID token verified for {email}",
+        is_demo=False,
+    )
+
+    return {
+        "authenticated": True,
+        "uid": uid,
+        "email": email,
+        "displayName": name,
+        "photoUrl": photo_url,
+        "role": "CITIZEN_USER",
+        "sessionToken": raw_session_token,
+        "expiresAt": expires_at,
+    }
+
+
+@app.get("/api/v1/auth/session")
+def verify_user_session(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    bearer = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else None
+    if not bearer:
+        raise HTTPException(status_code=401, detail="Session bearer token required.")
+
+    token_hash = hash_session_token(bearer)
+    now = utc_ms()
+    with db() as conn:
+        row = conn.execute(
+            """SELECT u.uid, u.email, u.display_name, u.photo_url, u.role, s.expires_at
+               FROM user_sessions s
+               JOIN users u ON s.uid = u.uid
+               WHERE s.token_hash = ? AND s.is_active = 1 AND s.expires_at > ?""",
+            (token_hash, now),
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=401, detail="Session token is invalid or expired.")
+
+        return {
+            "authenticated": True,
+            "uid": row["uid"],
+            "email": row["email"],
+            "displayName": row["display_name"],
+            "photoUrl": row["photo_url"],
+            "role": row["role"],
+            "sessionToken": bearer,
+            "expiresAt": row["expires_at"],
+        }
+
+
+@app.post("/api/v1/auth/signout")
+def sign_out_user_session(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    bearer = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else None
+    if bearer:
+        token_hash = hash_session_token(bearer)
+        with db() as conn:
+            conn.execute(
+                "UPDATE user_sessions SET is_active = 0 WHERE token_hash = ?",
+                (token_hash,),
+            )
+        create_audit(
+            actor="USER",
+            action="USER_SIGNOUT",
+            target_id=None,
+            message="User session invalidated via signout",
+            is_demo=False,
+        )
+    return {"signedOut": True, "time": now_iso()}
 
 
 def _smtp_is_configured() -> bool:
