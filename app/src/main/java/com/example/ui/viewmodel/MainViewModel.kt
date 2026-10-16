@@ -18,16 +18,24 @@ import com.example.localization.LanguageStrings
 import com.example.service.EmergencyOrchestrator
 import com.example.service.GuardModeService
 import com.example.service.location.UserLocation
+import com.example.data.remote.BackendConnectionState
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = application as NaariKavachApp
+
+    val assistantManager: com.example.assistant.ElevenLabsAssistantManager
+        get() = app.assistantManager
 
     val voiceProfile: StateFlow<VoiceProfileRepository.VoiceProfile?> = app.voiceProfileRepo.currentProfile
 
@@ -39,6 +47,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val backendEndpointConfigured: StateFlow<Boolean> = app.settingsRepo.policeEndpointConfigured
     val backendEndpointUrl: StateFlow<String> = app.settingsRepo.policeEndpointUrl
     val backendAuthToken: StateFlow<String> = app.settingsRepo.policeAuthToken
+
+    private val _connectionState = MutableStateFlow<BackendConnectionState>(BackendConnectionState.Connecting)
+    val connectionState: StateFlow<BackendConnectionState> = _connectionState.asStateFlow()
+
+    private var connectionCheckJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            authState.collect {
+                checkBackendConnection()
+            }
+        }
+        viewModelScope.launch {
+            isDemoMode.collect {
+                checkBackendConnection()
+            }
+        }
+    }
 
     val activeEmergency: StateFlow<EmergencyEventEntity?> = app.emergencyRepo.activeEmergency
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
@@ -67,6 +93,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val childSafetyAlerts: StateFlow<List<ChildSafetyAlertEntity>> = app.childSafetyRepo.alerts
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val policeStations: StateFlow<List<com.example.data.repository.PoliceStationRecord>> = app.policeDirectoryRepo.stations
+    val publicHelplines: StateFlow<List<com.example.data.repository.HelplineContact>> = app.policeDirectoryRepo.helplines
+
+    fun searchPoliceStations(query: String) = app.policeDirectoryRepo.search(query)
+    fun findNearestPoliceStation(lat: Double, lon: Double) = app.policeDirectoryRepo.findNearestStation(lat, lon)
+    fun refreshHelplinesFromBackend() = viewModelScope.launch { app.policeDirectoryRepo.refreshHelplinesFromBackend() }
+
     val currentLocation: StateFlow<UserLocation> = app.locationManager.currentLocation
 
     val liveRms: StateFlow<Float> = app.audioRecordManager.liveRmsLevel
@@ -78,7 +111,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         get() = (authState.value as? com.example.data.repository.AuthState.Authenticated)?.user
 
     suspend fun signInWithGoogle(activity: android.app.Activity): Result<com.example.data.repository.UserProfile> {
-        return app.authenticationRepo.signInWithGoogle(activity)
+        val result = app.authenticationRepo.signInWithGoogle(activity)
+        if (result.isSuccess) {
+            if (!app.settingsRepo.isAppTourCompleted.value) {
+                app.settingsRepo.startTour()
+            }
+            checkBackendConnection(forceRetry = true)
+        }
+        return result
     }
 
     fun signInDemoMode(demoName: String = "Demo Safety Reviewer", demoEmail: String = "reviewer.safety@naarikavach.local") {
@@ -86,11 +126,222 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             app.trustedContactRepo.seedDemoContactsIfEmpty(true)
         }
+        if (!app.settingsRepo.isAppTourCompleted.value) {
+            app.settingsRepo.startTour()
+        }
+        checkBackendConnection(forceRetry = true)
     }
 
     fun signOut() {
         viewModelScope.launch {
             app.authenticationRepo.signOut()
+            checkBackendConnection(forceRetry = true)
+        }
+    }
+
+    fun checkBackendConnection(forceRetry: Boolean = false) {
+        connectionCheckJob?.cancel()
+        connectionCheckJob = viewModelScope.launch {
+            _connectionState.value = BackendConnectionState.Connecting
+
+            if (!app.backendClient.isOnline()) {
+                _connectionState.value = BackendConnectionState.Offline(
+                    reason = "Device is offline. Local safety features, voice triggers, siren, and offline queue remain active."
+                )
+                return@launch
+            }
+
+            val maxAttempts = if (forceRetry) 1 else 3
+            var delayMs = 1500L
+            var lastError: String? = null
+
+            for (attempt in 1..maxAttempts) {
+                val healthResult = app.backendClient.checkHealth()
+                if (healthResult.isSuccess) {
+                    val health = healthResult.getOrThrow()
+                    val user = currentUser
+                    val demo = app.settingsRepo.isDemoMode.value
+
+                    if (demo) {
+                        _connectionState.value = BackendConnectionState.Connected(
+                            endpoint = app.settingsRepo.policeEndpointUrl.value,
+                            isUserAuthenticated = (user != null && !user.isDemoUser),
+                            userEmail = user?.email,
+                            isDemoMode = true,
+                            database = health.database,
+                            latencyMs = health.latencyMs
+                        )
+                        return@launch
+                    }
+
+                    if (user == null || user.isDemoUser) {
+                        _connectionState.value = BackendConnectionState.AuthenticationRequired(
+                            reason = "Sign in with Google to enable live control room alerts. Offline safety remains active."
+                        )
+                        return@launch
+                    }
+
+                    // Authenticated citizen: validate session token with backend
+                    val sessionValidation = app.authenticationRepo.validateSessionWithBackend()
+                    if (sessionValidation.isSuccess) {
+                        val verified = sessionValidation.getOrThrow()
+                        _connectionState.value = BackendConnectionState.Connected(
+                            endpoint = app.settingsRepo.policeEndpointUrl.value,
+                            isUserAuthenticated = true,
+                            userEmail = verified.email,
+                            isDemoMode = false,
+                            database = health.database,
+                            latencyMs = health.latencyMs
+                        )
+                        // Trigger background heartbeat sync once verified
+                        syncOfflineLocationEmailSettings()
+                        return@launch
+                    } else {
+                        val error = sessionValidation.exceptionOrNull()
+                        val msg = error?.message.orEmpty()
+                        if (msg.contains("401") || msg.contains("invalid", ignoreCase = true) || msg.contains("expired", ignoreCase = true)) {
+                            _connectionState.value = BackendConnectionState.AuthenticationRequired(
+                                reason = "Session expired or rejected by server. Please sign in again."
+                            )
+                            return@launch
+                        }
+                        lastError = msg
+                    }
+                } else {
+                    val error = healthResult.exceptionOrNull()
+                    lastError = error?.message ?: "Control room unreachable."
+                    if (!app.backendClient.isOnline()) {
+                        _connectionState.value = BackendConnectionState.Offline(
+                            reason = "Network connection lost during check."
+                        )
+                        return@launch
+                    }
+                }
+
+                if (attempt < maxAttempts) {
+                    delay(delayMs)
+                    delayMs *= 2
+                }
+            }
+
+            _connectionState.value = BackendConnectionState.ServiceUnavailable(
+                error = lastError ?: "Control room service is currently unavailable.",
+                lastAttemptAt = System.currentTimeMillis()
+            )
+        }
+    }
+
+    val isAppTourCompleted: StateFlow<Boolean> = app.settingsRepo.isAppTourCompleted
+    val isAppTourActive: StateFlow<Boolean> = app.settingsRepo.isAppTourActive
+    val currentTourStep: StateFlow<Int> = app.settingsRepo.currentTourStep
+
+    fun startAppTour() {
+        app.settingsRepo.startTour()
+    }
+
+    fun dismissAppTour(markCompleted: Boolean = true) {
+        app.settingsRepo.dismissTour(markCompleted)
+    }
+
+    fun nextTourStep() {
+        val current = currentTourStep.value
+        if (current < 8) {
+            app.settingsRepo.setTourStep(current + 1)
+        } else {
+            app.settingsRepo.dismissTour(markCompleted = true)
+        }
+    }
+
+    fun previousTourStep() {
+        val current = currentTourStep.value
+        if (current > 1) {
+            app.settingsRepo.setTourStep(current - 1)
+        }
+    }
+
+    val isJourneyActive: StateFlow<Boolean> = app.settingsRepo.isJourneyActive
+    val journeyDestination: StateFlow<String> = app.settingsRepo.journeyDestination
+    val journeyEtaMinutes: StateFlow<Int> = app.settingsRepo.journeyEtaMinutes
+
+    fun startJourney(origin: String = "Sadar, Nagpur", destination: String, etaMinutes: Int) {
+        app.settingsRepo.setJourneyState(true, destination, etaMinutes)
+        viewModelScope.launch {
+            val child = childProfiles.value.firstOrNull()
+            app.childSafetyRepo.createJourney(
+                child = child,
+                childAlias = child?.displayName ?: "User",
+                origin = origin,
+                destination = destination,
+                expectedMinutes = etaMinutes
+            )
+            app.auditLogRepo.log("JOURNEY_STARTED", "Started safe journey: $origin → $destination ($etaMinutes min)", "INFO")
+        }
+    }
+
+    fun endJourney() {
+        app.settingsRepo.setJourneyState(false, "", 0)
+        viewModelScope.launch {
+            val active = childSafetyJourneys.value.firstOrNull { it.status == "ACTIVE" || it.status == "OVERDUE" }
+            if (active != null) {
+                app.childSafetyRepo.markJourneySafe(active.id)
+            }
+            app.auditLogRepo.log("JOURNEY_ENDED", "Safe journey completed and ended by user", "INFO")
+        }
+    }
+
+    fun deleteAccountAndAllData(onComplete: () -> Unit = {}) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (isGuardModeActive.value) {
+                    stopGuardMode()
+                }
+                if (activeEmergency.value != null) {
+                    endEmergency("Account deleted")
+                }
+                app.settingsRepo.setJourneyState(false, "", 0)
+                app.voiceProfileRepo.deleteVoiceProfile()
+                app.database.clearAllTables()
+                app.authenticationRepo.signOut()
+                app.auditLoggerService.logSecurityEvent(
+                    action = "ACCOUNT_DELETED",
+                    category = "PRIVACY",
+                    details = "All local data wiped, voice profile deleted, and session terminated.",
+                    severity = "WARNING"
+                )
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "Error deleting account data: ${e.message}", e)
+            } finally {
+                withContext(Dispatchers.Main) {
+                    onComplete()
+                }
+            }
+        }
+    }
+
+    suspend fun saveThreatEvidence(
+        fileType: String,
+        description: String,
+        sha256Hash: String,
+        threatLevel: String,
+        details: String
+    ): Result<EvidenceEntity> = withContext(Dispatchers.IO) {
+        try {
+            val rawBytes = details.toByteArray(Charsets.UTF_8)
+            val evidence = EvidenceEntity(
+                id = java.util.UUID.randomUUID().toString(),
+                eventId = "threat_analysis_${System.currentTimeMillis()}",
+                title = "$threatLevel: $description",
+                filePath = "advisory://$fileType",
+                sha256Checksum = sha256Hash,
+                fileSizeBytes = rawBytes.size.toLong(),
+                timestamp = System.currentTimeMillis(),
+                isVerified = true
+            )
+            app.database.evidenceDao().insertEvidence(evidence)
+            app.auditLogRepo.log("THREAT_EVIDENCE_STORED", "Advisory analysis stored ($threatLevel): $description", if (threatLevel == "HIGH") "WARNING" else "INFO")
+            Result.success(evidence)
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 
@@ -259,6 +510,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun verifyTrustedContact(id: Long) {
+        viewModelScope.launch {
+            app.trustedContactRepo.verifyContactEmail(id)
+            app.auditLogRepo.log("CONTACT_VERIFIED", "Emergency contact $id email verified", "INFO")
+            syncOfflineLocationEmailSettings()
+        }
+    }
+
+    fun updateTrustedContactLocationConsent(contact: TrustedContactEntity, canShare: Boolean) {
+        viewModelScope.launch {
+            app.trustedContactRepo.updateLocationConsent(contact.id, canShare)
+            app.auditLogRepo.log("CONTACT_LOCATION_CONSENT", "Contact ${contact.id} location consent: $canShare", "INFO")
+            syncOfflineLocationEmailSettings()
+        }
+    }
+
     fun syncOfflineLocationEmailSettings() {
         viewModelScope.launch {
             val location = currentLocation.value
@@ -278,6 +545,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         app.settingsRepo.setDemoMode(enabled)
         viewModelScope.launch {
             app.auditLogRepo.log("DEMO_MODE_TOGGLED", "Demo mode set to: $enabled", "INFO")
+            checkBackendConnection(forceRetry = true)
         }
     }
 
@@ -294,7 +562,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (result.isSuccess) {
                 app.settingsRepo.setPoliceEndpointConfig(true, normalizedUrl, token.trim())
                 app.settingsRepo.setDemoMode(false)
-                app.auditLogRepo.log("LOCAL_BACKEND_CONNECTED", "Android app connected to Raksha360 local backend at $normalizedUrl", "INFO")
+                app.auditLogRepo.log("LOCAL_BACKEND_CONNECTED", "Android app connected to Raksha360 backend at $normalizedUrl", "INFO")
+                checkBackendConnection(forceRetry = true)
                 onResult(result)
             } else {
                 onResult(result)
@@ -302,23 +571,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun resetBackendToDefault(onComplete: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            app.settingsRepo.resetToDefaultEndpoint()
+            app.auditLogRepo.log("BACKEND_RESET_TO_DEFAULT", "Backend URL reset to default production endpoint", "INFO")
+            checkBackendConnection(forceRetry = true)
+            onComplete?.invoke()
+        }
+    }
+
     fun submitIncidentReport(
         title: String,
         category: String,
         description: String,
+        shareLocation: Boolean = true,
+        evidenceSha256: String? = null,
         onResult: (Result<com.example.data.remote.IncidentReportResponse>) -> Unit
     ) {
         viewModelScope.launch {
             val location = currentLocation.value
+            val useLocation = shareLocation && !location.isFallback
             val reportRequest = com.example.data.remote.IncidentReportRequest(
                 title = title.trim(),
                 category = category.trim(),
                 description = description.trim(),
-                locationDescription = if (location.isFallback) "Location unavailable — fallback location not used for report pin" else location.description,
-                latitude = location.takeUnless { it.isFallback }?.latitude,
-                longitude = location.takeUnless { it.isFallback }?.longitude,
+                locationDescription = if (useLocation) location.description else "Location not shared or GPS fix unavailable",
+                latitude = if (useLocation) location.latitude else null,
+                longitude = if (useLocation) location.longitude else null,
                 reportedAt = System.currentTimeMillis(),
-                isDemoMode = false
+                evidenceSha256 = evidenceSha256?.takeIf { it.isNotBlank() },
+                isDemoMode = isDemoMode.value
             )
             val result = app.backendClient.postIncidentReport(reportRequest)
             if (result.isSuccess) {

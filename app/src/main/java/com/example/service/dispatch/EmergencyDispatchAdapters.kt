@@ -166,11 +166,15 @@ class ProductionTrustedContactDispatchAdapter(
                 eventId = event.id,
                 timestamp = event.timestamp,
                 contacts = activeContacts.map { c ->
+                    val channels = mutableListOf("SMS", "NOTIFICATION")
+                    if (!c.email.isNullOrBlank()) {
+                        channels.add("EMAIL")
+                    }
                     ContactAlertItem(
                         name = c.name,
                         phoneNumber = c.phoneNumber,
                         email = c.email,
-                        deliveryChannels = listOf("SMS", "NOTIFICATION")
+                        deliveryChannels = channels
                     )
                 },
                 triggerType = event.triggerType,

@@ -1,7 +1,13 @@
 package com.example.domain.map
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.view.View
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -62,6 +68,7 @@ class OsmNativeMapProvider : IMapViewProvider {
                 position = GeoPoint(wp.coordinates.latitude, wp.coordinates.longitude)
                 title = wp.name
                 snippet = "${wp.category.replace("_", " ")} • ${wp.address}"
+                icon = createWaypointDrawable(context, wp.category)
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
                 setOnMarkerClickListener { m, _ ->
                     m.showInfoWindow()
@@ -86,11 +93,91 @@ class OsmNativeMapProvider : IMapViewProvider {
             } else {
                 "Accurate location active"
             }
+            icon = createUserLocationDrawable(context, isUserLocationFallback)
             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
         }
         mapView.overlays.add(userMarker)
 
         return mapView
+    }
+
+    private fun createUserLocationDrawable(context: Context, isFallback: Boolean): Drawable {
+        val density = context.resources.displayMetrics.density
+        val size = (32 * density).toInt().coerceAtLeast(32)
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val center = size / 2f
+
+        val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = if (isFallback) Color.argb(60, 245, 158, 11) else Color.argb(60, 37, 99, 235)
+            style = Paint.Style.FILL
+        }
+        val circlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = if (isFallback) Color.rgb(217, 119, 6) else Color.rgb(29, 78, 216)
+            style = Paint.Style.FILL
+        }
+        val innerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.FILL
+        }
+
+        canvas.drawCircle(center, center, center - 2 * density, haloPaint)
+        canvas.drawCircle(center, center, 9 * density, circlePaint)
+        canvas.drawCircle(center, center, 4.5f * density, innerPaint)
+
+        return BitmapDrawable(context.resources, bitmap)
+    }
+
+    private fun createWaypointDrawable(context: Context, category: String): Drawable {
+        val density = context.resources.displayMetrics.density
+        val width = (28 * density).toInt().coerceAtLeast(28)
+        val height = (38 * density).toInt().coerceAtLeast(38)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+
+        val pinColor = when (category) {
+            "POLICE_STATION" -> Color.rgb(15, 23, 42) // Deep navy #0F172A
+            "HOSPITAL" -> Color.rgb(220, 38, 38)     // Red #DC2626
+            "CAMPUS" -> Color.rgb(16, 185, 129)       // Emerald #10B981
+            else -> Color.rgb(37, 99, 235)           // Blue #2563EB
+        }
+
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = pinColor
+            style = Paint.Style.FILL
+        }
+
+        val path = Path()
+        val r = width / 2f
+        path.addCircle(r, r, r - 2, Path.Direction.CW)
+        path.moveTo(2f, r)
+        path.lineTo(r, height.toFloat() - 2)
+        path.lineTo(width.toFloat() - 2, r)
+        path.close()
+        canvas.drawPath(path, paint)
+
+        val whitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.FILL
+        }
+        canvas.drawCircle(r, r, r * 0.55f, whitePaint)
+
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = pinColor
+            textSize = 11 * density
+            textAlign = Paint.Align.CENTER
+            isFakeBoldText = true
+        }
+        val letter = when (category) {
+            "POLICE_STATION" -> "P"
+            "HOSPITAL" -> "+"
+            "CAMPUS" -> "C"
+            else -> "•"
+        }
+        val yPos = r - ((textPaint.descent() + textPaint.ascent()) / 2)
+        canvas.drawText(letter, r, yPos, textPaint)
+
+        return BitmapDrawable(context.resources, bitmap)
     }
 
     override fun updateCenter(view: View, coordinates: GeoCoordinates, zoomLevel: Double?) {

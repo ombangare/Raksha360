@@ -9,11 +9,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -71,6 +74,8 @@ fun MainAppContainer(viewModel: MainViewModel) {
 
     val activeEmergency by viewModel.activeEmergency.collectAsState()
     val authState by viewModel.authState.collectAsState()
+    val isAppTourActive by viewModel.isAppTourActive.collectAsState()
+    val currentTourStep by viewModel.currentTourStep.collectAsState()
     val strings = viewModel.getStrings()
 
     // Protected Navigation Boundary: Redirect unauthenticated users to Sign In
@@ -126,14 +131,27 @@ fun MainAppContainer(viewModel: MainViewModel) {
         NavRoutes.MAP,
         NavRoutes.JOURNEY,
         NavRoutes.ACTIVE_JOURNEY,
-        NavRoutes.THREATS
+        NavRoutes.THREATS,
+        NavRoutes.PRIVACY
     )
-    val showBottomBar = currentRoute in bottomNavRoutes && activeEmergency == null
+    val showBottomBar = currentRoute in bottomNavRoutes && activeEmergency == null && !isAppTourActive
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
-            Column {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (activeEmergency != null && currentRoute != NavRoutes.EMERGENCY_ACTIVE) {
+                            Modifier
+                                .background(com.example.ui.theme.EmergencyRed)
+                                .statusBarsPadding()
+                        } else {
+                            Modifier
+                        }
+                    )
+            ) {
                 // High-visibility Emergency Banner when active and not already on Emergency Screen
                 if (activeEmergency != null && currentRoute != NavRoutes.EMERGENCY_ACTIVE) {
                     EmergencyBanner(
@@ -341,6 +359,65 @@ fun MainAppContainer(viewModel: MainViewModel) {
                         onBack = { navController.popBackStack() }
                     )
                 }
+
+                // 13. ElevenLabs AI Assistant Screen
+                composable(NavRoutes.ASSISTANT) {
+                    com.example.assistant.AssistantScreen(
+                        assistantManager = viewModel.assistantManager,
+                        onBack = { navController.popBackStack() },
+                        onNavigateTarget = { target ->
+                            when (target) {
+                                "HOME" -> navController.navigate(NavRoutes.HOME)
+                                "MAP" -> navController.navigate(NavRoutes.MAP)
+                                "SAFE_JOURNEY" -> navController.navigate(NavRoutes.JOURNEY)
+                                "THREAT_ANALYZER" -> navController.navigate(NavRoutes.THREATS)
+                                "CHILD_SAFETY" -> navController.navigate(NavRoutes.CHILD_SAFETY)
+                                "EMERGENCY_REPORTING" -> navController.navigate(NavRoutes.INCIDENT_REPORT)
+                                "PRIVACY_CENTER" -> navController.navigate(NavRoutes.PRIVACY)
+                                "EMERGENCY_CONTACTS" -> navController.navigate(NavRoutes.CONTACTS)
+                                else -> navController.navigate(NavRoutes.HOME)
+                            }
+                        }
+                    )
+                }
+            }
+
+            // Interactive 8-Step App Tour Overlay
+            if (isAppTourActive && activeEmergency == null) {
+                com.example.ui.components.InteractiveTourOverlay(
+                    currentStep = currentTourStep,
+                    onNext = {
+                        val nextStep = currentTourStep + 1
+                        if (nextStep <= com.example.ui.components.APP_TOUR_STEPS.size) {
+                            val nextTargetRoute = com.example.ui.components.APP_TOUR_STEPS[nextStep - 1].targetRoute
+                            navController.navigate(nextTargetRoute) {
+                                launchSingleTop = true
+                            }
+                            viewModel.nextTourStep()
+                        } else {
+                            viewModel.dismissAppTour(markCompleted = true)
+                            navController.navigate(NavRoutes.HOME) {
+                                popUpTo(NavRoutes.HOME) { inclusive = false }
+                            }
+                        }
+                    },
+                    onBack = {
+                        val prevStep = currentTourStep - 1
+                        if (prevStep >= 1) {
+                            val prevTargetRoute = com.example.ui.components.APP_TOUR_STEPS[prevStep - 1].targetRoute
+                            navController.navigate(prevTargetRoute) {
+                                launchSingleTop = true
+                            }
+                            viewModel.previousTourStep()
+                        }
+                    },
+                    onSkip = {
+                        viewModel.dismissAppTour(markCompleted = true)
+                        navController.navigate(NavRoutes.HOME) {
+                            popUpTo(NavRoutes.HOME) { inclusive = false }
+                        }
+                    }
+                )
             }
         }
     }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import uuid
 from pathlib import Path
 
@@ -1147,6 +1148,548 @@ def test_device_endpoints_reject_invalid_and_expired_user_sessions(client: TestC
 
     expired_resp = client.post("/api/v1/device/session", headers={"Authorization": f"Bearer {raw_exp}"})
     assert expired_resp.status_code == 401
+
+
+def test_emergency_contacts_crud_and_max_two_limit(client: TestClient):
+    device = {"Authorization": "Bearer test-device-token"}
+    # Clean slate for test
+    with api.db() as conn:
+        conn.execute("DELETE FROM emergency_contacts")
+
+    # Add contact 1
+    res1 = client.post("/api/v1/emergency-contacts", headers=device, json={
+        "email": "guardian1@example.com",
+        "name": "Sister",
+        "relationship": "Sister",
+        "phone": "+919800000001",
+        "notifyByEmail": True,
+        "canShareLocation": True,
+    })
+    assert res1.status_code == 200
+    assert res1.json()["accepted"] is True
+    assert res1.json()["email"] == "guardian1@example.com"
+
+    # Add contact 2
+    res2 = client.post("/api/v1/emergency-contacts", headers=device, json={
+        "email": "guardian2@example.com",
+        "name": "Father",
+        "relationship": "Father",
+        "phone": "+919800000002",
+        "notifyByEmail": True,
+        "canShareLocation": True,
+    })
+    assert res2.status_code == 200
+    assert res2.json()["accepted"] is True
+
+    # Attempting to add contact 3 must be strictly rejected (Max 2 contacts)
+    res3 = client.post("/api/v1/emergency-contacts", headers=device, json={
+        "email": "guardian3@example.com",
+        "name": "Brother",
+        "relationship": "Brother",
+        "phone": "+919800000003",
+        "notifyByEmail": True,
+        "canShareLocation": True,
+    })
+    assert res3.status_code == 400
+    assert "Maximum of 2 emergency contacts allowed" in res3.json()["detail"]
+
+    # Updating existing contact 1 should be allowed
+    res_update = client.post("/api/v1/emergency-contacts", headers=device, json={
+        "email": "guardian1@example.com",
+        "name": "Elder Sister",
+        "relationship": "Sister",
+        "phone": "+919800000001",
+        "notifyByEmail": True,
+        "canShareLocation": False,
+    })
+    assert res_update.status_code == 200
+    assert res_update.json()["accepted"] is True
+
+    # Get contacts list
+    get_res = client.get("/api/v1/emergency-contacts", headers=device)
+    assert get_res.status_code == 200
+    contacts = get_res.json()
+    assert len(contacts) == 2
+    emails = {c["email"] for c in contacts}
+    assert emails == {"guardian1@example.com", "guardian2@example.com"}
+
+    # Invalid email rejection
+    res_invalid = client.post("/api/v1/emergency-contacts", headers=device, json={
+        "email": "not-an-email",
+        "name": "Friend",
+    })
+    assert res_invalid.status_code == 422 or res_invalid.status_code == 400
+
+    # Delete contact
+    del_res = client.delete("/api/v1/emergency-contacts/guardian1@example.com", headers=device)
+    assert del_res.status_code == 200
+    assert del_res.json()["deleted"] is True
+
+    # Now contact list has 1, adding another is permitted
+    get_after_del = client.get("/api/v1/emergency-contacts", headers=device)
+    assert len(get_after_del.json()) == 1
+
+
+def test_emergency_contact_verification_flow(client: TestClient, monkeypatch):
+    device = {"Authorization": "Bearer test-device-token"}
+    monkeypatch.setenv("SOS_EMAIL_MODE", "DEMO")
+
+    with api.db() as conn:
+        conn.execute("DELETE FROM emergency_contacts")
+
+    res = client.post("/api/v1/emergency-contacts", headers=device, json={
+        "email": "verify-test@example.com",
+        "name": "Aunt",
+        "relationship": "Aunt",
+        "phone": "+919800000009",
+    })
+    assert res.status_code == 200
+    demo_code = res.json()["demoVerificationCode"]
+    assert demo_code is not None
+
+    # Verify with wrong code should fail
+    fail_res = client.post("/api/v1/emergency-contacts/verify-test@example.com/verify", headers=device, json={"code": "000000"})
+    assert fail_res.status_code == 400
+    assert "Invalid verification code" in fail_res.json()["detail"]
+
+    # Verify with correct code should succeed
+    ok_res = client.post(f"/api/v1/emergency-contacts/verify-test@example.com/verify", headers=device, json={"code": demo_code})
+    assert ok_res.status_code == 200
+    assert ok_res.json()["verified"] is True
+
+    # Check that contact is now verified in GET
+    contacts = client.get("/api/v1/emergency-contacts", headers=device).json()
+    assert contacts[0]["isVerified"] is True
+
+    # Test preference patch
+    patch_res = client.patch("/api/v1/emergency-contacts/verify-test@example.com/preferences", headers=device, json={
+        "canShareLocation": False,
+        "notifyByEmail": True
+    })
+    assert patch_res.status_code == 200
+    assert patch_res.json()["canShareLocation"] is False
+
+
+def test_sos_email_alert_demo_mode_isolation_and_deduplication(client: TestClient, monkeypatch):
+    device = {"Authorization": "Bearer test-device-token"}
+    monkeypatch.setenv("SOS_EMAIL_MODE", "DEMO")
+
+    event_id = f"SOS-DEMO-{uuid.uuid4()}"
+    client.post("/api/v1/emergency-events", headers=device, json={
+        "eventId": event_id,
+        "triggerType": "VOICE_SOS",
+        "isDemoMode": False,
+        "latitude": 21.1500,
+        "longitude": 79.0900,
+        "accuracyMeters": 12.0,
+    })
+
+    # Trigger trusted-contact-alerts in demo mode
+    alert_res = client.post("/api/v1/trusted-contact-alerts", headers=device, json={
+        "eventId": event_id,
+        "triggerType": "VOICE_SOS",
+        "contacts": [
+            {"name": "Sister", "email": "sister@example.com", "notifyByEmail": True, "isVerified": True, "canShareLocation": True},
+            {"name": "Father", "email": "father@example.com", "notifyByEmail": True, "isVerified": True, "canShareLocation": True},
+        ],
+        "latitude": 21.1500,
+        "longitude": 79.0900,
+    })
+    assert alert_res.status_code == 200
+    data = alert_res.json()
+    assert data["sentCount"] == 2
+    assert data["deliveryStatus"] == "ACCEPTED_DEMO_SANDBOX"
+    assert data["emailMode"] == "DEMO"
+    assert "live-track?token=" in data["liveTrackingUrl"]
+
+    # Verify deduplication on retry
+    retry_res = client.post("/api/v1/trusted-contact-alerts", headers=device, json={
+        "eventId": event_id,
+        "triggerType": "VOICE_SOS",
+        "contacts": [
+            {"name": "Sister", "email": "sister@example.com", "notifyByEmail": True, "isVerified": True},
+            {"name": "Father", "email": "father@example.com", "notifyByEmail": True, "isVerified": True},
+        ],
+    })
+    assert retry_res.status_code == 200
+    retry_data = retry_res.json()
+    assert all(c.get("deduplicated") is True for c in retry_data["contactsDispatched"])
+
+
+def test_sos_email_alert_live_mode_unverified_and_unconfigured(client: TestClient, monkeypatch):
+    device = {"Authorization": "Bearer test-device-token"}
+    monkeypatch.setenv("SOS_EMAIL_MODE", "LIVE")
+    monkeypatch.delenv("RAKSHA360_SMTP_HOST", raising=False)
+    monkeypatch.delenv("RAKSHA360_SMTP_FROM_EMAIL", raising=False)
+
+    event_id = f"SOS-LIVE-{uuid.uuid4()}"
+    client.post("/api/v1/emergency-events", headers=device, json={
+        "eventId": event_id,
+        "triggerType": "MANUAL_SOS",
+        "isDemoMode": False,
+    })
+
+    # In LIVE mode, an unverified contact must be marked UNVERIFIED_CONTACT
+    res_unverified = client.post("/api/v1/trusted-contact-alerts", headers=device, json={
+        "eventId": event_id,
+        "triggerType": "MANUAL_SOS",
+        "contacts": [
+            {"name": "Unverified Contact", "email": "unverified@example.com", "notifyByEmail": True, "isVerified": False},
+        ],
+    })
+    assert res_unverified.status_code == 200
+    unverified_data = res_unverified.json()
+    assert unverified_data["contactsDispatched"][0]["status"] == "UNVERIFIED_CONTACT"
+
+    # In LIVE mode with verified contact but no SMTP configured, must return PROVIDER_NOT_CONFIGURED (truthful!)
+    event_id_2 = f"SOS-LIVE-2-{uuid.uuid4()}"
+    res_nosmtp = client.post("/api/v1/trusted-contact-alerts", headers=device, json={
+        "eventId": event_id_2,
+        "triggerType": "MANUAL_SOS",
+        "contacts": [
+            {"name": "Verified Contact", "email": "verified@example.com", "notifyByEmail": True, "isVerified": True},
+        ],
+    })
+    assert res_nosmtp.status_code == 200
+    nosmtp_data = res_nosmtp.json()
+    assert nosmtp_data["deliveryStatus"] == "PROVIDER_NOT_CONFIGURED"
+    assert nosmtp_data["sentCount"] == 0
+
+
+def test_live_location_share_page_status_and_revocation(client: TestClient, monkeypatch):
+    device = {"Authorization": "Bearer test-device-token"}
+    monkeypatch.setenv("SOS_EMAIL_MODE", "DEMO")
+
+    event_id = f"SOS-SHARE-{uuid.uuid4()}"
+    client.post("/api/v1/emergency-events", headers=device, json={
+        "eventId": event_id,
+        "triggerType": "MANUAL_SOS",
+        "isDemoMode": False,
+        "latitude": 21.1458,
+        "longitude": 79.0882, # Sadar Nagpur fallback coordinates
+    })
+
+    alert_res = client.post("/api/v1/trusted-contact-alerts", headers=device, json={
+        "eventId": event_id,
+        "triggerType": "MANUAL_SOS",
+        "contacts": [{"name": "Guardian", "email": "guardian@example.com", "notifyByEmail": True, "isVerified": True}],
+        "latitude": 21.1458,
+        "longitude": 79.0882,
+    })
+    live_url = alert_res.json()["liveTrackingUrl"]
+    token = live_url.split("token=")[1]
+
+    # 1. Fetch live track HTML page
+    html_res = client.get(f"/live-track?token={token}")
+    assert html_res.status_code == 200
+    assert "text/html" in html_res.headers["content-type"]
+    assert "Raksha360 Live Alert" in html_res.text
+    assert "Call 112" in html_res.text
+    assert "Fallback Location Note" in html_res.text # Nagpur fallback warning present!
+
+    # 2. Check JSON status endpoint
+    status_res = client.get(f"/api/v1/live-location/status?token={token}")
+    assert status_res.status_code == 200
+    s_data = status_res.json()
+    assert s_data["valid"] is True
+    assert s_data["isFallbackNagpur"] is True
+    assert s_data["isRevoked"] is False
+
+    # 3. Revoke live location share
+    revoke_res = client.post(f"/api/v1/emergency-events/{event_id}/revoke-location-share", headers=device)
+    assert revoke_res.status_code == 200
+    assert revoke_res.json()["revoked"] is True
+
+    # 4. Status endpoint now reports isRevoked
+    status_after_revoke = client.get(f"/api/v1/live-location/status?token={token}")
+    assert status_after_revoke.status_code == 200
+    assert status_after_revoke.json()["isRevoked"] is True
+
+    # 5. HTML page returns 403 Revoked
+    html_after_revoke = client.get(f"/live-track?token={token}")
+    assert html_after_revoke.status_code == 403
+    assert "Live Location Sharing Revoked" in html_after_revoke.text
+
+    # 6. Tampered token returns 404
+    tampered_res = client.get("/live-track?token=tampered_token_abcdef123456")
+    assert tampered_res.status_code == 404
+
+
+def test_missed_heartbeat_cron_endpoint(client: TestClient):
+    device = {"Authorization": "Bearer test-device-token"}
+    res = client.post("/api/v1/cron/evaluate-offline", headers=device)
+    assert res.status_code == 200
+    assert res.json()["status"] == "completed"
+
+
+def test_elevenlabs_assistant_session_endpoint(client: TestClient, monkeypatch):
+    device = {"Authorization": "Bearer test-device-token"}
+
+    # 1. Unconfigured API key returns configured: False with clear guidance
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    res_unconf = client.get("/api/v1/assistant/session", headers=device)
+    assert res_unconf.status_code == 200
+    data_unconf = res_unconf.json()
+    assert data_unconf["configured"] is False
+    assert data_unconf["agentId"] == "agent_3701m51qchkaenxsjnzr8jvrm66"
+    assert "ELEVENLABS_API_KEY" in data_unconf["message"]
+
+    # 2. Unauthorized request is rejected
+    res_unauth = client.get("/api/v1/assistant/session")
+    assert res_unauth.status_code == 401
+
+    # 3. Configured API key returns signedUrl from ElevenLabs
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test_elevenlabs_secret_key")
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def get(self, url, params=None, headers=None):
+            class MockResponse:
+                status_code = 200
+                def json(self):
+                    return {"signed_url": "wss://api.elevenlabs.io/v1/convai/conversation?agent_id=agent_3701m51qchkaenxsjnzr8jvrm66&signature=fake_sig"}
+            return MockResponse()
+
+    monkeypatch.setattr(api.httpx, "AsyncClient", MockAsyncClient)
+    res_conf = client.get("/api/v1/assistant/session", headers=device)
+    assert res_conf.status_code == 200
+    data_conf = res_conf.json()
+    assert data_conf["configured"] is True
+    assert "wss://api.elevenlabs.io" in data_conf["signedUrl"]
+    assert data_conf["agentId"] == "agent_3701m51qchkaenxsjnzr8jvrm66"
+
+    # 4. Upstream ElevenLabs error (401/403) handles gracefully without leaking API key
+    class MockErrorAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def get(self, url, params=None, headers=None):
+            class MockErrorResponse:
+                status_code = 401
+                text = "Unauthorized: Invalid API Key"
+            return MockErrorResponse()
+
+    monkeypatch.setattr(api.httpx, "AsyncClient", MockErrorAsyncClient)
+    res_err = client.get("/api/v1/assistant/session", headers=device)
+    assert res_err.status_code == 200
+    data_err = res_err.json()
+    assert data_err["configured"] is False
+    assert "401" in data_err.get("error", "")
+    assert "test_elevenlabs_secret_key" not in json.dumps(data_err)
+
+
+def test_google_apps_script_adapter_configuration_check(monkeypatch):
+    monkeypatch.delenv("GOOGLE_APPS_SCRIPT_URL", raising=False)
+    monkeypatch.delenv("GOOGLE_APPS_SCRIPT_SECRET", raising=False)
+    assert api._apps_script_is_configured() is False
+
+    # Invalid URL scheme or missing secret
+    monkeypatch.setenv("GOOGLE_APPS_SCRIPT_URL", "https://example.com/not-apps-script")
+    monkeypatch.setenv("GOOGLE_APPS_SCRIPT_SECRET", "my_secret")
+    assert api._apps_script_is_configured() is False
+
+    # Valid deployment URL and secret
+    monkeypatch.setenv("GOOGLE_APPS_SCRIPT_URL", "https://script.google.com/macros/s/AKfycby.../exec")
+    monkeypatch.setenv("GOOGLE_APPS_SCRIPT_SECRET", "valid_secret_123")
+    assert api._apps_script_is_configured() is True
+
+
+def test_google_apps_script_gateway_adapter_success_and_accepted(monkeypatch):
+    monkeypatch.setenv("GOOGLE_APPS_SCRIPT_URL", "https://script.google.com/macros/s/AKfycby.../exec")
+    monkeypatch.setenv("GOOGLE_APPS_SCRIPT_SECRET", "super_secret_test_token")
+
+    captured_requests = []
+
+    class MockHttpxClient:
+        def __init__(self, *args, **kwargs):
+            self.timeout = kwargs.get("timeout")
+            self.follow_redirects = kwargs.get("follow_redirects")
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def post(self, url, json=None, headers=None):
+            captured_requests.append({"url": url, "json": json, "headers": headers})
+            class MockResp:
+                status_code = 200
+                text = '{"status":"success","message":"Email delivered successfully"}'
+                def json(self):
+                    return {"status": "success", "message": "Email delivered successfully", "messageId": "msg_123"}
+            return MockResp()
+
+    monkeypatch.setattr(api.httpx, "Client", MockHttpxClient)
+
+    res = api.send_email_via_apps_script(
+        recipient_email="guardian@example.com",
+        recipient_name="Guardian Name",
+        subject="Emergency Alert",
+        body="SOS triggered",
+        event_id="EVT-001",
+        is_demo=False,
+    )
+    assert res["status"] == "DELIVERED_VIA_APPS_SCRIPT"
+    assert res["recipient"] == "guardian@example.com"
+    assert len(captured_requests) == 1
+    req_payload = captured_requests[0]["json"]
+    assert req_payload["secret"] == "super_secret_test_token"
+    assert req_payload["recipient"] == "guardian@example.com"
+    assert req_payload["eventId"] == "EVT-001"
+    assert "signature" in req_payload
+    assert "timestamp" in req_payload
+    assert "nonce" in req_payload
+
+
+def test_google_apps_script_gateway_adapter_unauthorized_and_forbidden(monkeypatch):
+    monkeypatch.setenv("GOOGLE_APPS_SCRIPT_URL", "https://script.google.com/macros/s/AKfycby.../exec")
+    monkeypatch.setenv("GOOGLE_APPS_SCRIPT_SECRET", "wrong_secret")
+
+    class MockHttpxClient:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def post(self, url, json=None, headers=None):
+            class MockResp:
+                status_code = 401
+                text = '{"status":"error","error":"Unauthorized: Invalid secret token"}'
+                def json(self):
+                    return {"status": "error", "error": "Unauthorized: Invalid secret token"}
+            return MockResp()
+
+    monkeypatch.setattr(api.httpx, "Client", MockHttpxClient)
+    res = api.send_email_via_apps_script(
+        recipient_email="guardian@example.com",
+        recipient_name="Guardian",
+        subject="Alert",
+        body="Body",
+        event_id="EVT-401",
+    )
+    assert res["status"] == "GATEWAY_UNAUTHORIZED"
+    assert "401" in res["error"]
+
+
+def test_google_apps_script_gateway_adapter_timeout_and_error(monkeypatch):
+    monkeypatch.setenv("GOOGLE_APPS_SCRIPT_URL", "https://script.google.com/macros/s/AKfycby.../exec")
+    monkeypatch.setenv("GOOGLE_APPS_SCRIPT_SECRET", "test_secret")
+
+    # 1. Timeout handling
+    class MockTimeoutClient:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def post(self, url, json=None, headers=None):
+            raise api.httpx.TimeoutException("Connection timed out")
+
+    monkeypatch.setattr(api.httpx, "Client", MockTimeoutClient)
+    res_to = api.send_email_via_apps_script(
+        recipient_email="guardian@example.com",
+        recipient_name="Guardian",
+        subject="Alert",
+        body="Body",
+        event_id="EVT-TO",
+    )
+    assert res_to["status"] == "GATEWAY_TIMEOUT"
+    assert "timed out" in res_to["error"]
+
+    # 2. Gateway JSON error payload handling
+    class MockErrorClient:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def post(self, url, json=None, headers=None):
+            class MockResp:
+                status_code = 200
+                text = '{"status":"error","error":"Invalid recipient email address"}'
+                def json(self):
+                    return {"status": "error", "error": "Invalid recipient email address"}
+            return MockResp()
+
+    monkeypatch.setattr(api.httpx, "Client", MockErrorClient)
+    res_err = api.send_email_via_apps_script(
+        recipient_email="bad-email",
+        recipient_name="Bad",
+        subject="Alert",
+        body="Body",
+        event_id="EVT-ERR",
+    )
+    assert res_err["status"] == "GATEWAY_ERROR"
+    assert "Invalid recipient email" in res_err["error"]
+
+
+def test_sos_email_live_mode_apps_script_gateway_flow_and_deduplication(client: TestClient, monkeypatch):
+    device = {"Authorization": "Bearer test-device-token"}
+    monkeypatch.setenv("SOS_EMAIL_MODE", "LIVE")
+    monkeypatch.setenv("GOOGLE_APPS_SCRIPT_URL", "https://script.google.com/macros/s/AKfycby.../exec")
+    monkeypatch.setenv("GOOGLE_APPS_SCRIPT_SECRET", "gateway_secret_live")
+
+    dispatched_recipients = []
+
+    class MockHttpxClient:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def post(self, url, json=None, headers=None):
+            dispatched_recipients.append(json["recipient"])
+            class MockResp:
+                status_code = 200
+                text = '{"status":"success","message":"Delivered via Google Apps Script"}'
+                def json(self):
+                    return {"status": "success", "message": "Delivered via Google Apps Script"}
+            return MockResp()
+
+    monkeypatch.setattr(api.httpx, "Client", MockHttpxClient)
+
+    event_id = f"SOS-GW-{uuid.uuid4()}"
+    client.post("/api/v1/emergency-events", headers=device, json={
+        "eventId": event_id,
+        "triggerType": "MANUAL_SOS",
+        "isDemoMode": False,
+        "latitude": 21.1458,
+        "longitude": 79.0882,
+    })
+
+    # Dispatch to 2 verified emergency contacts
+    alert_res = client.post("/api/v1/trusted-contact-alerts", headers=device, json={
+        "eventId": event_id,
+        "triggerType": "MANUAL_SOS",
+        "contacts": [
+            {"name": "Contact One", "email": "contact1@example.com", "notifyByEmail": True, "isVerified": True, "canShareLocation": True},
+            {"name": "Contact Two", "email": "contact2@example.com", "notifyByEmail": True, "isVerified": True, "canShareLocation": False},
+        ],
+        "latitude": 21.1458,
+        "longitude": 79.0882,
+    })
+    assert alert_res.status_code == 200
+    alert_data = alert_res.json()
+    assert alert_data["sentCount"] == 2
+    assert alert_data["deliveryStatus"] == "DELIVERED_VIA_APPS_SCRIPT"
+    assert "contact1@example.com" in dispatched_recipients
+    assert "contact2@example.com" in dispatched_recipients
+    # Ensure one gateway call per recipient (recipient privacy preserved)
+    assert len(dispatched_recipients) == 2
+
+    # Second call with same eventId must be deduplicated
+    alert_retry = client.post("/api/v1/trusted-contact-alerts", headers=device, json={
+        "eventId": event_id,
+        "triggerType": "MANUAL_SOS",
+        "contacts": [
+            {"name": "Contact One", "email": "contact1@example.com", "notifyByEmail": True, "isVerified": True},
+            {"name": "Contact Two", "email": "contact2@example.com", "notifyByEmail": True, "isVerified": True},
+        ],
+    })
+    assert alert_retry.status_code == 200
+    retry_data = alert_retry.json()
+    assert all(c.get("deduplicated") is True for c in retry_data["contactsDispatched"])
+    # No extra gateway calls were made
+    assert len(dispatched_recipients) == 2
+
 
 
 

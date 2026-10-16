@@ -12,6 +12,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import com.example.data.local.entity.TrustedContactEntity
+import com.example.data.repository.HelplineContact
 import com.example.service.location.UserLocation
 import org.json.JSONArray
 import org.json.JSONObject
@@ -31,7 +32,7 @@ class BackendApiClient(
         val isDemoMode: Boolean = true
     )
 
-    private val okHttpClient = OkHttpClient.Builder()
+    val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
         .writeTimeout(8, TimeUnit.SECONDS)
@@ -54,7 +55,7 @@ class BackendApiClient(
     ): Result<String> = withContext(Dispatchers.IO) {
         val config = getApiConfig()
         if (config.isDemoMode || !config.isConfigured) {
-            return@withContext Result.failure(IOException("Device heartbeat not sent: connect the phone to the laptop backend and disable Demo Mode."))
+            return@withContext Result.failure(IOException("Device heartbeat skipped: Demo Mode is active or control room is not configured."))
         }
         if (!isOnline()) return@withContext Result.failure(IOException("Device heartbeat not sent because the phone is offline."))
         try {
@@ -107,15 +108,63 @@ class BackendApiClient(
         }
     }
 
-    private fun isOnline(): Boolean {
+    fun isOnline(): Boolean {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
         val activeNetwork = cm.activeNetwork ?: return false
         val caps = cm.getNetworkCapabilities(activeNetwork) ?: return false
         return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
-    /** Tests both the backend health route and the authenticated Android-device route. */
-    suspend fun testConnection(baseUrl: String, token: String): Result<String> = withContext(Dispatchers.IO) {
+    data class HealthCheckResponse(
+        val status: String,
+        val database: String,
+        val service: String,
+        val incidentRecords: Int,
+        val version: String,
+        val time: String,
+        val latencyMs: Long
+    )
+
+    /** Unauthenticated health probe to verify control room reachability and database readiness. */
+    suspend fun checkHealth(customUrl: String? = null): Result<HealthCheckResponse> = withContext(Dispatchers.IO) {
+        val config = getApiConfig()
+        val targetBase = (customUrl ?: config.baseUrl).trim().trimEnd('/')
+        val normalized = if (targetBase.endsWith("/api/v1")) targetBase else "$targetBase/api/v1"
+
+        if (!isOnline()) {
+            return@withContext Result.failure(IOException("No network connection available."))
+        }
+
+        val start = System.currentTimeMillis()
+        try {
+            val request = Request.Builder().url("$normalized/health").get().build()
+            val response = okHttpClient.newCall(request).execute()
+            val latency = System.currentTimeMillis() - start
+            val body = response.body?.string().orEmpty()
+
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(IOException("Backend returned HTTP ${response.code}: ${body.take(120)}"))
+            }
+
+            val json = JSONObject(body)
+            Result.success(
+                HealthCheckResponse(
+                    status = json.optString("status", "ONLINE"),
+                    database = json.optString("database", "unknown"),
+                    service = json.optString("service", "Raksha360 Control Room API"),
+                    incidentRecords = json.optInt("incidentRecords", 0),
+                    version = json.optString("version", "1.0"),
+                    time = json.optString("time", ""),
+                    latencyMs = latency
+                )
+            )
+        } catch (e: Exception) {
+            Result.failure(IOException("Cannot reach control room service at $normalized: ${e.localizedMessage ?: "Connection failed"}"))
+        }
+    }
+
+    /** Tests the backend health route and optionally verifies the supplied token (user session or device token). */
+    suspend fun testConnection(baseUrl: String, token: String = ""): Result<String> = withContext(Dispatchers.IO) {
         val trimmed = baseUrl.trim().trimEnd('/')
         if (!(trimmed.startsWith("http://") || trimmed.startsWith("https://"))) {
             return@withContext Result.failure(IOException("URL must start with http:// or https://."))
@@ -125,35 +174,95 @@ class BackendApiClient(
             && !normalized.contains("10.0.2.2") && !normalized.contains("localhost") && !normalized.contains("127.0.0.1")) {
             return@withContext Result.failure(IOException("Production API requires secure HTTPS. Cleartext HTTP is not permitted for remote connections."))
         }
-        if (token.isBlank()) return@withContext Result.failure(IOException("Enter the authorized device token."))
         try {
             val healthRequest = Request.Builder().url("$normalized/health").get().build()
             val healthResponse = okHttpClient.newCall(healthRequest).execute()
             val healthBody = healthResponse.body?.string().orEmpty()
             if (!healthResponse.isSuccessful) return@withContext Result.failure(IOException("Health check failed (HTTP ${healthResponse.code}): ${healthBody.take(120)}"))
             val healthJson = JSONObject(healthBody)
-            val sessionRequest = Request.Builder()
-                .url("$normalized/device/session")
-                .header("Authorization", "Bearer ${token.trim()}")
-                .post("{}".toRequestBody(jsonMedia))
-                .build()
+            val serviceName = healthJson.optString("service", "Raksha360 Control Room")
+            val dbName = healthJson.optString("database", "online")
+
+            val cleanToken = token.trim()
+            if (cleanToken.isBlank()) {
+                return@withContext Result.success("Reachable: $serviceName is ONLINE (Database: $dbName). Sign in with Google to enable live dispatch.")
+            }
+
+            val sessionRequest = if (cleanToken.startsWith("rk_")) {
+                Request.Builder()
+                    .url("$normalized/auth/session")
+                    .header("Authorization", "Bearer $cleanToken")
+                    .get()
+                    .build()
+            } else {
+                Request.Builder()
+                    .url("$normalized/device/session")
+                    .header("Authorization", "Bearer $cleanToken")
+                    .post("{}".toRequestBody(jsonMedia))
+                    .build()
+            }
+
             val sessionResponse = okHttpClient.newCall(sessionRequest).execute()
             val sessionBody = sessionResponse.body?.string().orEmpty()
             if (!sessionResponse.isSuccessful) {
-                return@withContext Result.failure(IOException("Health check reachable but device authentication rejected (HTTP ${sessionResponse.code}). Verify device token."))
+                return@withContext Result.failure(IOException("Health check reachable but authorization rejected (HTTP ${sessionResponse.code}). Verify credentials."))
             }
-            val sessionJson = JSONObject(sessionBody)
-            if (!sessionJson.optBoolean("authenticated", false)) return@withContext Result.failure(IOException("Backend did not confirm device authentication."))
-            Result.success("Connected to ${healthJson.optString("service", "Raksha360 backend")} · Database: ${healthJson.optString("database", "online")}")
+            Result.success("Connected to $serviceName · Database: $dbName · Authorization verified.")
         } catch (e: Exception) {
             Result.failure(IOException("Cannot reach backend at $normalized: ${e.localizedMessage ?: "Connection failed"}"))
+        }
+    }
+
+    suspend fun fetchPublicHelplines(): Result<List<HelplineContact>> = withContext(Dispatchers.IO) {
+        val config = getApiConfig()
+        if (!isOnline() || !config.isConfigured) {
+            return@withContext Result.failure(IOException("Phone is offline or backend unconfigured"))
+        }
+        try {
+            val request = Request.Builder()
+                .url("${config.baseUrl.removeSuffix("/")}/public-helplines")
+                .header("Authorization", "Bearer ${config.authToken}")
+                .get()
+                .build()
+            val response = okHttpClient.newCall(request).execute()
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(IOException("HTTP ${response.code}: $body"))
+            }
+            val root = JSONObject(body)
+            val array = root.optJSONArray("contacts") ?: JSONArray()
+            val list = mutableListOf<HelplineContact>()
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                list.add(
+                    HelplineContact(
+                        id = obj.optString("id", "helpline_$i"),
+                        name = obj.optString("name", "Emergency Helpline"),
+                        category = obj.optString("category", "emergency"),
+                        phone = obj.optString("phone", "112"),
+                        scope = obj.optString("scope", "")
+                    )
+                )
+            }
+            Result.success(list)
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 
     suspend fun postIncidentReport(request: IncidentReportRequest): Result<IncidentReportResponse> = withContext(Dispatchers.IO) {
         val config = getApiConfig()
         if (config.isDemoMode || !config.isConfigured) {
-            return@withContext Result.failure(IOException("Report not sent. Connect the phone to the local backend and turn off Demo Mode in Privacy Center → Backend Connection."))
+            // Truthful Demo Mode simulation for offline testing
+            return@withContext Result.success(
+                IncidentReportResponse(
+                    reportId = "DEMO-QUEUE-${UUID.randomUUID().toString().take(8).uppercase()}",
+                    status = "Queued (Demo Mode)",
+                    receivedAt = System.currentTimeMillis(),
+                    isDemo = true,
+                    message = "Demo Mode: Report saved in local evaluation queue. No live police dispatch occurred."
+                )
+            )
         }
         try {
             val json = JSONObject().apply {
@@ -165,6 +274,7 @@ class BackendApiClient(
                 put("longitude", request.longitude)
                 put("reportedAt", request.reportedAt)
                 put("sourceEventId", request.sourceEventId)
+                request.evidenceSha256?.let { put("evidenceSha256", it) }
                 put("isDemoMode", false)
             }
             val httpRequest = Request.Builder()
@@ -374,10 +484,6 @@ class BackendApiClient(
         withContext(Dispatchers.IO) {
             val config = getApiConfig()
 
-            if (!isOnline()) {
-                return@withContext Result.failure(IOException("No network connection (Offline)"))
-            }
-
             if (config.isDemoMode || !config.isConfigured) {
                 // Keep the event locally; a demo-mode request is not a real police dispatch.
                 return@withContext Result.success(
@@ -389,6 +495,10 @@ class BackendApiClient(
                         message = "Demo only: no police service was contacted and no unit was dispatched. In a real emergency, call 112 directly."
                     )
                 )
+            }
+
+            if (!isOnline()) {
+                return@withContext Result.failure(IOException("No network connection (Offline)"))
             }
 
             try {
@@ -429,6 +539,167 @@ class BackendApiClient(
                         message = resObj.optString("message", "The local backend did not confirm official dispatch.")
                     )
                 )
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    override suspend fun verifyGoogleIdToken(idToken: String, nonce: String?): Result<GoogleAuthResponse> =
+        withContext(Dispatchers.IO) {
+            val config = getApiConfig()
+            if (!isOnline()) {
+                return@withContext Result.failure(IOException("No network connection. Please connect to the internet to sign in."))
+            }
+
+            try {
+                val json = JSONObject().apply {
+                    put("idToken", idToken)
+                    if (nonce != null) put("nonce", nonce)
+                }
+
+                val httpRequest = Request.Builder()
+                    .url("${config.baseUrl.removeSuffix("/")}/auth/google")
+                    .header("Content-Type", "application/json")
+                    .post(json.toString().toRequestBody(jsonMedia))
+                    .build()
+
+                val response = okHttpClient.newCall(httpRequest).execute()
+                val body = response.body?.string() ?: "{}"
+
+                if (!response.isSuccessful) {
+                    val detail = try {
+                        JSONObject(body).optString("detail", "HTTP ${response.code}")
+                    } catch (_: Exception) {
+                        "HTTP ${response.code}"
+                    }
+                    return@withContext Result.failure(IOException("Google authentication rejected by server: $detail"))
+                }
+
+                val resObj = JSONObject(body)
+                Result.success(
+                    GoogleAuthResponse(
+                        authenticated = resObj.optBoolean("authenticated", true),
+                        uid = resObj.getString("uid"),
+                        email = resObj.getString("email"),
+                        displayName = resObj.getString("displayName"),
+                        photoUrl = resObj.optString("photoUrl").takeIf { it.isNotBlank() && it != "null" },
+                        role = resObj.optString("role", "CITIZEN_USER"),
+                        sessionToken = resObj.getString("sessionToken"),
+                        expiresAt = resObj.getLong("expiresAt")
+                    )
+                )
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    override suspend fun verifySession(sessionToken: String): Result<GoogleAuthResponse> =
+        withContext(Dispatchers.IO) {
+            val config = getApiConfig()
+            if (!isOnline()) {
+                return@withContext Result.failure(IOException("No network connection."))
+            }
+
+            try {
+                val httpRequest = Request.Builder()
+                    .url("${config.baseUrl.removeSuffix("/")}/auth/session")
+                    .header("Authorization", "Bearer $sessionToken")
+                    .get()
+                    .build()
+
+                val response = okHttpClient.newCall(httpRequest).execute()
+                val body = response.body?.string() ?: "{}"
+
+                if (!response.isSuccessful) {
+                    val detail = try {
+                        JSONObject(body).optString("detail", "HTTP ${response.code}")
+                    } catch (_: Exception) {
+                        "HTTP ${response.code}"
+                    }
+                    return@withContext Result.failure(IOException("Session invalid: $detail"))
+                }
+
+                val resObj = JSONObject(body)
+                Result.success(
+                    GoogleAuthResponse(
+                        authenticated = resObj.optBoolean("authenticated", true),
+                        uid = resObj.getString("uid"),
+                        email = resObj.getString("email"),
+                        displayName = resObj.getString("displayName"),
+                        photoUrl = resObj.optString("photoUrl").takeIf { it.isNotBlank() && it != "null" },
+                        role = resObj.optString("role", "CITIZEN_USER"),
+                        sessionToken = resObj.optString("sessionToken", sessionToken),
+                        expiresAt = resObj.getLong("expiresAt")
+                    )
+                )
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    override suspend fun revokeSession(sessionToken: String): Result<Boolean> =
+        withContext(Dispatchers.IO) {
+            val config = getApiConfig()
+            if (!isOnline()) {
+                return@withContext Result.success(true)
+            }
+
+            try {
+                val emptyBody = "".toRequestBody(jsonMedia)
+                val httpRequest = Request.Builder()
+                    .url("${config.baseUrl.removeSuffix("/")}/auth/signout")
+                    .header("Authorization", "Bearer $sessionToken")
+                    .post(emptyBody)
+                    .build()
+
+                val response = okHttpClient.newCall(httpRequest).execute()
+                Result.success(response.isSuccessful)
+            } catch (e: Exception) {
+                Result.success(true) // Best-effort sign-out
+            }
+        }
+
+    override suspend fun getAssistantSession(): Result<AssistantSessionResponse> =
+        withContext(Dispatchers.IO) {
+            val config = getApiConfig()
+            try {
+                val httpRequest = Request.Builder()
+                    .url("${config.baseUrl.removeSuffix("/")}/assistant/session")
+                    .header("Authorization", "Bearer ${config.authToken}")
+                    .get()
+                    .build()
+
+                val response = okHttpClient.newCall(httpRequest).execute()
+                val body = response.body?.string() ?: "{}"
+                val resObj = JSONObject(body)
+                Result.success(
+                    AssistantSessionResponse(
+                        configured = resObj.optBoolean("configured", false),
+                        agentId = resObj.optString("agentId", "agent_3701m51qchkaenxsjnzr8jvrm66"),
+                        agentName = resObj.optString("agentName", "Raksha360 AI Assistant"),
+                        signedUrl = resObj.optString("signedUrl").takeIf { it.isNotBlank() && it != "null" },
+                        message = resObj.optString("message").takeIf { it.isNotBlank() },
+                        error = resObj.optString("error").takeIf { it.isNotBlank() }
+                    )
+                )
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    override suspend fun revokeLiveLocationShare(eventId: String): Result<Boolean> =
+        withContext(Dispatchers.IO) {
+            val config = getApiConfig()
+            try {
+                val emptyBody = "".toRequestBody(jsonMedia)
+                val httpRequest = Request.Builder()
+                    .url("${config.baseUrl.removeSuffix("/")}/emergency-events/$eventId/revoke-location-share")
+                    .header("Authorization", "Bearer ${config.authToken}")
+                    .post(emptyBody)
+                    .build()
+
+                val response = okHttpClient.newCall(httpRequest).execute()
+                Result.success(response.isSuccessful)
             } catch (e: Exception) {
                 Result.failure(e)
             }

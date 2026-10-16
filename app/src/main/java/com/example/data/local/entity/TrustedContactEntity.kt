@@ -13,6 +13,8 @@ data class TrustedContactEntity(
     val email: String? = null,
     val notifyBySms: Boolean = true,
     val notifyByEmail: Boolean = false,
+    val isEmailVerified: Boolean = false,
+    val canShareLocation: Boolean = true,
     val isActive: Boolean = true,
     val createdAt: Long = System.currentTimeMillis()
 )

@@ -6,6 +6,7 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,7 +15,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -27,6 +30,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -44,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.data.local.entity.ChildProfileEntity
@@ -116,8 +121,13 @@ fun ChildSafetyScreen(
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
-            .verticalScroll(rememberScrollState()).padding(16.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+            .padding(bottom = 90.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -149,10 +159,31 @@ fun ChildSafetyScreen(
             OutlinedTextField(guardian, { guardian = it }, label = { Text("Guardian label") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             OutlinedTextField(safePlace, { safePlace = it }, label = { Text("Safe-place name (optional)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(latitude, { latitude = it }, label = { Text("Latitude") }, modifier = Modifier.weight(1f), singleLine = true)
-                OutlinedTextField(longitude, { longitude = it }, label = { Text("Longitude") }, modifier = Modifier.weight(1f), singleLine = true)
+                OutlinedTextField(
+                    latitude,
+                    { latitude = it },
+                    label = { Text("Latitude") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    longitude,
+                    { longitude = it },
+                    label = { Text("Longitude") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
             }
-            OutlinedTextField(radius, { radius = it }, label = { Text("Geofence radius in metres (100–1000)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(
+                radius,
+                { radius = it },
+                label = { Text("Geofence radius in metres (100–1000)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
             Button(onClick = {
                 viewModel.createChildProfile(alias, ageBand, school, guardian, safePlace, latitude, longitude, radius) { result ->
                     if (result.isSuccess) {
@@ -175,10 +206,29 @@ fun ChildSafetyScreen(
         }
 
         SectionCard("3 · Safe journey check-ins", Icons.Default.LocationOn) {
-            OutlinedTextField(journeyChild, { journeyChild = it }, label = { Text("Child alias (must match profile) ") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            if (children.isNotEmpty()) {
+                Text("Quick select saved child profile:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                    children.forEach { c ->
+                        FilterChip(
+                            selected = journeyChild == c.displayName,
+                            onClick = { journeyChild = c.displayName },
+                            label = { Text(c.displayName) }
+                        )
+                    }
+                }
+            }
+            OutlinedTextField(journeyChild, { journeyChild = it }, label = { Text("Child alias (must match profile)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             OutlinedTextField(origin, { origin = it }, label = { Text("Journey start") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             OutlinedTextField(destination, { destination = it }, label = { Text("Destination") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            OutlinedTextField(etaMinutes, { etaMinutes = it }, label = { Text("Expected arrival in minutes (5–1440)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(
+                etaMinutes,
+                { etaMinutes = it },
+                label = { Text("Expected arrival in minutes (5–1440)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
             Button(onClick = {
                 viewModel.createSafetyJourney(journeyChild, origin, destination, etaMinutes) { result ->
                     showResult(result, "Journey saved. Missed arrival will raise a local alert; it does not prove an emergency.")
@@ -190,10 +240,33 @@ fun ChildSafetyScreen(
         }
 
         SectionCard("4 · School pickup / drop verification", Icons.Default.School) {
+            if (children.isNotEmpty()) {
+                Text("Quick select saved child profile:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                    children.forEach { c ->
+                        FilterChip(
+                            selected = handoverChild == c.displayName,
+                            onClick = {
+                                handoverChild = c.displayName
+                                if (c.schoolName.isNotBlank()) handoverSchool = c.schoolName
+                                if (c.guardianLabel.isNotBlank()) handoverGuardian = c.guardianLabel
+                            },
+                            label = { Text(c.displayName) }
+                        )
+                    }
+                }
+            }
             OutlinedTextField(handoverChild, { handoverChild = it }, label = { Text("Existing child profile alias") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             OutlinedTextField(handoverSchool, { handoverSchool = it }, label = { Text("School / pickup point") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             OutlinedTextField(handoverGuardian, { handoverGuardian = it }, label = { Text("Authorized guardian label") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            OutlinedTextField(handoverMinutes, { handoverMinutes = it }, label = { Text("Pickup time in minutes from now") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(
+                handoverMinutes,
+                { handoverMinutes = it },
+                label = { Text("Pickup time in minutes from now") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
             Button(onClick = {
                 viewModel.createSchoolHandover(handoverChild, handoverSchool, handoverGuardian, handoverMinutes) { result ->
                     if (result.isSuccess) {
@@ -203,7 +276,14 @@ fun ChildSafetyScreen(
                     } else message = result.exceptionOrNull()?.message ?: "Handover could not be created."
                 }
             }, modifier = Modifier.fillMaxWidth()) { Text("Create handover and generate one-time PIN") }
-            OutlinedTextField(verifyPin, { verifyPin = it.take(6) }, label = { Text("Six-digit pickup PIN") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(
+                verifyPin,
+                { verifyPin = it.take(6) },
+                label = { Text("Six-digit pickup PIN") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
             if (handovers.isEmpty()) Text("No handovers created.", style = MaterialTheme.typography.bodySmall)
             handovers.forEach { handover -> HandoverCard(handover, verifyPin) { id ->
                 viewModel.verifySchoolHandover(id, verifyPin) { result ->

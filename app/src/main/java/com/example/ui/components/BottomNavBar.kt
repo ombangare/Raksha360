@@ -14,6 +14,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -49,11 +50,15 @@ fun NaariKavachBottomNavBar(
 
     NavigationBar(
         modifier = modifier,
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = NavyDark,
         tonalElevation = 8.dp
     ) {
         items.forEach { item ->
-            val isSelected = currentRoute == item.route
+            val isSelected = when (item.route) {
+                NavRoutes.JOURNEY -> currentRoute == NavRoutes.JOURNEY || currentRoute == NavRoutes.ACTIVE_JOURNEY
+                NavRoutes.PRIVACY -> currentRoute == NavRoutes.PRIVACY || currentRoute == NavRoutes.BACKEND_SETTINGS
+                else -> currentRoute == item.route
+            }
 
             NavigationBarItem(
                 selected = isSelected,
@@ -68,15 +73,15 @@ fun NaariKavachBottomNavBar(
                     Text(
                         text = item.title,
                         fontSize = 11.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                     )
                 },
                 colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = ShieldBlue,
-                    selectedTextColor = ShieldBlue,
-                    indicatorColor = ShieldBlue.copy(alpha = 0.12f),
-                    unselectedIconColor = TextMuted,
-                    unselectedTextColor = TextMuted
+                    selectedIconColor = Color.White,
+                    selectedTextColor = Color.White,
+                    indicatorColor = ShieldBlue,
+                    unselectedIconColor = Color(0xFF94A3B8),
+                    unselectedTextColor = Color(0xFF94A3B8)
                 ),
                 modifier = Modifier.testTag(item.testTag)
             )

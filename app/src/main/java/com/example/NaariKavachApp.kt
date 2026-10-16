@@ -53,6 +53,7 @@ class NaariKavachApp : Application() {
     lateinit var auditLogRepo: AuditLogRepository
     lateinit var auditLoggerService: com.example.service.audit.AuditLoggerService
     lateinit var childSafetyRepo: com.example.data.repository.ChildSafetyRepository
+    lateinit var policeDirectoryRepo: com.example.data.repository.PoliceStationDirectoryRepository
 
     // Map & Safety Engines
     lateinit var mapProvider: com.example.domain.map.IMapViewProvider
@@ -71,6 +72,9 @@ class NaariKavachApp : Application() {
     // Location
     lateinit var locationManager: AppLocationManager
 
+    // ElevenLabs AI Assistant
+    lateinit var assistantManager: com.example.assistant.ElevenLabsAssistantManager
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -80,13 +84,17 @@ class NaariKavachApp : Application() {
         settingsRepo = SettingsRepository(this)
 
         backendClient = BackendApiClient(this) {
+            val userToken = if (::authenticationRepo.isInitialized) authenticationRepo.currentUser?.sessionToken else null
+            val devToken = settingsRepo.policeAuthToken.value
+            val effectiveToken = if (!userToken.isNullOrBlank()) userToken else devToken
             BackendApiClient.ApiConfiguration(
-                isConfigured = settingsRepo.policeEndpointConfigured.value,
+                isConfigured = settingsRepo.policeEndpointConfigured.value && settingsRepo.policeEndpointUrl.value.isNotBlank(),
                 baseUrl = settingsRepo.policeEndpointUrl.value,
-                authToken = settingsRepo.policeAuthToken.value,
+                authToken = effectiveToken,
                 isDemoMode = settingsRepo.isDemoMode.value
             )
         }
+
 
         voiceProfileRepo = VoiceProfileRepository(this, cryptoManager)
         trustedContactRepo = TrustedContactRepository(database.trustedContactDao())
@@ -104,6 +112,7 @@ class NaariKavachApp : Application() {
         auditLogRepo = AuditLogRepository(database.auditLogDao(), auditLoggerService)
         childSafetyRepo = com.example.data.repository.ChildSafetyRepository(this, database.childSafetyDao())
         authenticationRepo = com.example.data.repository.AuthenticationRepository(this, backendClient, auditLoggerService)
+        policeDirectoryRepo = com.example.data.repository.PoliceStationDirectoryRepository(this, backendClient)
 
         mapProvider = com.example.domain.map.OsmNativeMapProvider()
         safetyScoringEngine = com.example.domain.map.SafetyScoringEngine()
@@ -133,6 +142,11 @@ class NaariKavachApp : Application() {
         audioRecordManager = AudioRecordManager(this)
         incidentAudioRecorder = IncidentAudioRecorder(this, cryptoManager)
         locationManager = AppLocationManager(this)
+        assistantManager = com.example.assistant.ElevenLabsAssistantManager(
+            context = this,
+            backendClient = backendClient,
+            okHttpClient = backendClient.okHttpClient
+        )
 
         createNotificationChannels()
 

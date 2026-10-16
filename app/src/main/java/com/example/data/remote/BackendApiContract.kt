@@ -99,8 +99,37 @@ interface BackendApiContract {
     suspend fun postEmergencyLocation(request: EmergencyLocationStreamRequest): Result<EmergencyLocationResponse>
     suspend fun postTrustedContactAlert(request: TrustedContactAlertRequest): Result<TrustedContactAlertResponse>
     suspend fun postPoliceAlert(request: PoliceAlertRequest): Result<PoliceAlertResponse>
+    suspend fun verifyGoogleIdToken(idToken: String, nonce: String? = null): Result<GoogleAuthResponse>
+    suspend fun verifySession(sessionToken: String): Result<GoogleAuthResponse>
+    suspend fun revokeSession(sessionToken: String): Result<Boolean>
+    suspend fun getAssistantSession(): Result<AssistantSessionResponse>
+    suspend fun revokeLiveLocationShare(eventId: String): Result<Boolean>
 }
 
+data class AssistantSessionResponse(
+    val configured: Boolean,
+    val agentId: String,
+    val agentName: String,
+    val signedUrl: String?,
+    val message: String? = null,
+    val error: String? = null
+)
+
+data class GoogleAuthRequest(
+    val idToken: String,
+    val nonce: String? = null
+)
+
+data class GoogleAuthResponse(
+    val authenticated: Boolean,
+    val uid: String,
+    val email: String,
+    val displayName: String,
+    val photoUrl: String? = null,
+    val role: String = "CITIZEN_USER",
+    val sessionToken: String,
+    val expiresAt: Long
+)
 
 data class IncidentReportRequest(
     val title: String,
@@ -111,6 +140,7 @@ data class IncidentReportRequest(
     val longitude: Double?,
     val reportedAt: Long = System.currentTimeMillis(),
     val sourceEventId: String? = null,
+    val evidenceSha256: String? = null,
     val isDemoMode: Boolean = false
 )
 

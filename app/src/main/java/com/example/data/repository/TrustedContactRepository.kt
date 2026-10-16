@@ -13,6 +13,9 @@ class TrustedContactRepository(private val dao: TrustedContactDao) {
     suspend fun getActiveContactsList(): List<TrustedContactEntity> = dao.getActiveContactsList()
 
     suspend fun addContact(name: String, relationship: String, phone: String, email: String?): Long {
+        if (dao.getActiveContactCount() >= 2) {
+            return -1L
+        }
         val contact = TrustedContactEntity(
             name = name.trim(),
             relationship = relationship.trim(),
@@ -20,9 +23,21 @@ class TrustedContactRepository(private val dao: TrustedContactDao) {
             email = email?.trim()?.ifBlank { null },
             notifyBySms = true,
             notifyByEmail = !email.isNullOrBlank(),
+            isEmailVerified = false,
+            canShareLocation = true,
             isActive = true
         )
         return dao.insertContact(contact)
+    }
+
+    suspend fun verifyContactEmail(id: Long) {
+        val contact = dao.getContactById(id) ?: return
+        dao.updateContact(contact.copy(isEmailVerified = true))
+    }
+
+    suspend fun updateLocationConsent(id: Long, canShare: Boolean) {
+        val contact = dao.getContactById(id) ?: return
+        dao.updateContact(contact.copy(canShareLocation = canShare))
     }
 
     suspend fun updateContact(contact: TrustedContactEntity) {
@@ -35,7 +50,7 @@ class TrustedContactRepository(private val dao: TrustedContactDao) {
 
     /**
      * Seeds demo contacts ONLY if explicit Demo Mode is enabled.
-     * Normal authenticated users start with their own clean contact list.
+     * Respects the maximum limit of 2 emergency contacts.
      */
     suspend fun seedDemoContactsIfEmpty(isDemoMode: Boolean) {
         if (!isDemoMode) return
@@ -50,24 +65,19 @@ class TrustedContactRepository(private val dao: TrustedContactDao) {
                         email = "demo.sister@naarikavach.local",
                         notifyBySms = true,
                         notifyByEmail = true,
+                        isEmailVerified = true,
+                        canShareLocation = true,
                         isActive = true
                     ),
                     TrustedContactEntity(
                         name = "Demo Contact: Father",
                         relationship = "Father",
                         phoneNumber = "+91 98000 00002",
-                        email = null,
+                        email = "demo.father@naarikavach.local",
                         notifyBySms = true,
-                        notifyByEmail = false,
-                        isActive = true
-                    ),
-                    TrustedContactEntity(
-                        name = "Demo Contact: Flatmate",
-                        relationship = "Friend / Flatmate",
-                        phoneNumber = "+91 98000 00003",
-                        email = "demo.friend@naarikavach.local",
-                        notifyBySms = true,
-                        notifyByEmail = false,
+                        notifyByEmail = true,
+                        isEmailVerified = true,
+                        canShareLocation = true,
                         isActive = true
                     )
                 )

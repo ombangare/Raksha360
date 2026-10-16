@@ -6,6 +6,7 @@ import com.example.data.local.dao.TrustedContactDao
 import com.example.data.local.entity.EmergencyEventEntity
 import com.example.data.local.entity.TrustedContactEntity
 import com.example.data.remote.BackendApiClient
+import com.example.data.remote.BackendConnectionState
 import com.example.data.repository.AuthenticationRepository
 import com.example.data.repository.AuthState
 import com.example.data.repository.SettingsRepository
@@ -230,9 +231,9 @@ class NaariKavachComprehensiveTest {
         repo.seedDemoContactsIfEmpty(isDemoMode = false)
         assertEquals("Contacts must remain empty for regular authenticated user", 0, contactList.size)
 
-        // When isDemoMode = true, seeds clearly tagged demo contacts
+        // When isDemoMode = true, seeds clearly tagged demo contacts (strictly max 2)
         repo.seedDemoContactsIfEmpty(isDemoMode = true)
-        assertEquals(3, contactList.size)
+        assertEquals(2, contactList.size)
         assertTrue("Demo contacts must be clearly labeled Demo Contact", contactList.all { it.name.startsWith("Demo Contact") })
     }
 
@@ -311,5 +312,409 @@ class NaariKavachComprehensiveTest {
         assertEquals(demoRequest.eventId, data.eventId)
         assertTrue("Tracking ticket must indicate demo simulation", data.trackingToken.startsWith("DEMO-TKT-"))
         assertEquals("RECEIVED", data.status)
+    }
+
+    // 9. Interactive 8-Step App Tour Lifecycle
+    @Test
+    fun testInteractiveAppTourLifecycle() {
+        val settingsRepo = SettingsRepository(context)
+
+        // Reset state
+        settingsRepo.setAppTourCompleted(false)
+        settingsRepo.dismissTour(markCompleted = false)
+        assertFalse(settingsRepo.isAppTourCompleted.value)
+        assertFalse(settingsRepo.isAppTourActive.value)
+
+        // 1. First-login start
+        settingsRepo.startTour()
+        assertTrue("Tour must be active after startTour()", settingsRepo.isAppTourActive.value)
+        assertEquals("Tour must begin at Step 1", 1, settingsRepo.currentTourStep.value)
+
+        // 2. Step transitions up to 8
+        settingsRepo.setTourStep(2)
+        assertEquals(2, settingsRepo.currentTourStep.value)
+        settingsRepo.setTourStep(8)
+        assertEquals(8, settingsRepo.currentTourStep.value)
+
+        // Bounds check
+        settingsRepo.setTourStep(99)
+        assertEquals("Tour step cannot exceed 8", 8, settingsRepo.currentTourStep.value)
+        settingsRepo.setTourStep(-5)
+        assertEquals("Tour step cannot go below 1", 1, settingsRepo.currentTourStep.value)
+
+        // 3. Skip tour
+        settingsRepo.dismissTour(markCompleted = true)
+        assertFalse("Tour should not be active after dismiss", settingsRepo.isAppTourActive.value)
+        assertTrue("Tour should be marked completed after dismiss", settingsRepo.isAppTourCompleted.value)
+
+        // 4. Returning user should not auto-trigger, but replay must work
+        assertTrue("Returning user has completed tour", settingsRepo.isAppTourCompleted.value)
+        settingsRepo.startTour()
+        assertTrue("Replaying tour must activate overlay at step 1", settingsRepo.isAppTourActive.value)
+        assertEquals(1, settingsRepo.currentTourStep.value)
+        settingsRepo.dismissTour(markCompleted = true)
+    }
+
+    // 10. Incident Report Submission and Hashing
+    @Test
+    fun testIncidentReportSubmissionFlow() = runTest {
+        val backendClient = BackendApiClient(context) {
+            BackendApiClient.ApiConfiguration(
+                isConfigured = false,
+                isDemoMode = true
+            )
+        }
+
+        val request = com.example.data.remote.IncidentReportRequest(
+            title = "Unlit street near Sadar",
+            category = "Unsafe route",
+            description = "Streetlights non-functional along the alley behind the bus stop.",
+            locationDescription = "Sadar, Nagpur",
+            latitude = 21.1612,
+            longitude = 79.0825,
+            evidenceSha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            isDemoMode = true
+        )
+
+        val result = backendClient.postIncidentReport(request)
+        assertTrue("Incident report in demo mode should succeed locally", result.isSuccess)
+        val response = result.getOrThrow()
+        assertTrue("Report ID must be generated with DEMO-QUEUE prefix", response.reportId.startsWith("DEMO-QUEUE-"))
+        assertEquals("Queued (Demo Mode)", response.status)
+        assertTrue("Response message must indicate offline evaluation queue", response.message.contains("evaluation queue"))
+        assertTrue("isDemo flag must be true", response.isDemo)
+    }
+
+    // 11. Session Expiration and Credential Lifecycle Tests
+    @Test
+    fun testSessionExpirationDetectionAndClearing() = runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        val backendClient = BackendApiClient(context) { BackendApiClient.ApiConfiguration() }
+
+        // Manually seed an expired session in SharedPreferences
+        val prefs = context.getSharedPreferences("naari_kavach_auth_prefs", Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString("auth_uid", "expired_user_123")
+            .putString("auth_display_name", "Expired User")
+            .putString("auth_email", "expired@example.com")
+            .putString("auth_session_token", "rk_expired_token")
+            .putLong("auth_expires_at", System.currentTimeMillis() - 60_000) // 1 minute in past
+            .putBoolean("auth_is_demo", false)
+            .apply()
+
+        val authRepo = AuthenticationRepository(context, backendClient, fakeAuditLogger, testDispatcher)
+        assertTrue("Expired session must result in Unauthenticated state", authRepo.authState.value is AuthState.Unauthenticated)
+        val message = (authRepo.authState.value as AuthState.Unauthenticated).message
+        assertTrue("Error message must inform user session expired", message?.contains("expired", ignoreCase = true) == true)
+
+        // SharedPreferences must have been cleared
+        assertNull("UID must be cleared after expired session detected", prefs.getString("auth_uid", null))
+        assertNull("Session token must be cleared", prefs.getString("auth_session_token", null))
+    }
+
+    @Test
+    fun testValidSessionRestorationWithExpiryInFuture() = runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        val backendClient = BackendApiClient(context) { BackendApiClient.ApiConfiguration() }
+
+        val futureExpiry = System.currentTimeMillis() + 86_400_000L // 24 hours in future
+        val prefs = context.getSharedPreferences("naari_kavach_auth_prefs", Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString("auth_uid", "valid_user_456")
+            .putString("auth_display_name", "Valid User")
+            .putString("auth_email", "valid@example.com")
+            .putString("auth_session_token", "rk_valid_token_789")
+            .putLong("auth_expires_at", futureExpiry)
+            .putBoolean("auth_is_demo", false)
+            .apply()
+
+        val authRepo = AuthenticationRepository(context, backendClient, fakeAuditLogger, testDispatcher)
+        assertTrue("Valid unexpired session must be Authenticated", authRepo.authState.value is AuthState.Authenticated)
+        val user = (authRepo.authState.value as AuthState.Authenticated).user
+        assertEquals("valid_user_456", user.uid)
+        assertEquals("valid@example.com", user.email)
+        assertEquals("rk_valid_token_789", user.sessionToken)
+        assertEquals(futureExpiry, user.expiresAt)
+        assertFalse("User must not be marked as demo", user.isDemoUser)
+
+        // Sign out clears session
+        authRepo.signOut()
+        testScheduler.advanceUntilIdle()
+        assertTrue("Must be unauthenticated after sign out", authRepo.authState.value is AuthState.Unauthenticated)
+        assertNull(prefs.getString("auth_uid", null))
+        assertNull(prefs.getString("auth_session_token", null))
+    }
+
+    @Test
+    fun testWebClientIdConfigurationValidation() {
+        val configured = AuthenticationRepository.isWebClientIdConfigured()
+        val clientId = AuthenticationRepository.getWebClientId()
+        assertNotNull("Client ID should never be null", clientId)
+        if (configured) {
+            assertTrue("Configured client ID must contain .apps.googleusercontent.com", clientId.contains(".apps.googleusercontent.com"))
+            assertFalse("Configured client ID must not be the placeholder", clientId == AuthenticationRepository.DEFAULT_WEB_CLIENT_ID_PLACEHOLDER)
+        }
+    }
+
+    // 12. Automatic Backend Connection, Zero-Config Defaults & Demo Isolation Tests
+    @Test
+    fun testAutomaticProductionEndpointConfiguration() {
+        // Clear any previous settings
+        val prefs = context.getSharedPreferences("naari_kavach_settings", Context.MODE_PRIVATE)
+        prefs.edit().clear().apply()
+
+        val settingsRepo = SettingsRepository(context)
+        // Public users must have production endpoint configured by default without manual setup
+        assertEquals("Production API URL must be default", BuildConfig.DEFAULT_API_BASE_URL, settingsRepo.policeEndpointUrl.value)
+        assertTrue("Endpoint must be marked configured by default when base URL is provided", settingsRepo.policeEndpointConfigured.value)
+        assertEquals("No manual auth token required by default", "", settingsRepo.policeAuthToken.value)
+    }
+
+    @Test
+    fun testResetToDefaultEndpointRestoresProductionUrl() {
+        val prefs = context.getSharedPreferences("naari_kavach_settings", Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString("police_endpoint_url", "http://192.168.1.50:4000/api/v1")
+            .putString("police_auth_token", "dev_secret_token")
+            .apply()
+
+        val settingsRepo = SettingsRepository(context)
+        assertEquals("http://192.168.1.50:4000/api/v1", settingsRepo.policeEndpointUrl.value)
+        assertEquals("dev_secret_token", settingsRepo.policeAuthToken.value)
+
+        // Reset to default
+        settingsRepo.resetToDefaultEndpoint()
+        assertEquals("Must restore default production URL", BuildConfig.DEFAULT_API_BASE_URL, settingsRepo.policeEndpointUrl.value)
+        assertEquals("Must clear manual developer token override", "", settingsRepo.policeAuthToken.value)
+        assertTrue("Must keep configured flag true", settingsRepo.policeEndpointConfigured.value)
+    }
+
+    @Test
+    fun testBackendConnectionStateHierarchy() {
+        val connecting = BackendConnectionState.Connecting
+        assertTrue("Connecting state check", connecting is BackendConnectionState.Connecting)
+
+        val connectedLive = BackendConnectionState.Connected(
+            endpoint = BuildConfig.DEFAULT_API_BASE_URL,
+            isUserAuthenticated = true,
+            userEmail = "citizen@example.com",
+            isDemoMode = false,
+            database = "supabase",
+            latencyMs = 45L
+        )
+        assertTrue("Live connected state check", connectedLive.isUserAuthenticated)
+        assertFalse("Live connected must not be demo mode", connectedLive.isDemoMode)
+        assertEquals(45L, connectedLive.latencyMs)
+        assertEquals("supabase", connectedLive.database)
+
+        val connectedDemo = BackendConnectionState.Connected(
+            endpoint = BuildConfig.DEFAULT_API_BASE_URL,
+            isUserAuthenticated = false,
+            isDemoMode = true
+        )
+        assertTrue("Demo mode flag must be true", connectedDemo.isDemoMode)
+
+        val offline = BackendConnectionState.Offline("Network interface unavailable")
+        assertTrue("Offline reason check", offline.reason.contains("Network interface"))
+
+        val authReq = BackendConnectionState.AuthenticationRequired("Sign in required")
+        assertTrue("Auth required check", authReq.reason.contains("Sign in"))
+
+        val svcUnavailable = BackendConnectionState.ServiceUnavailable("HTTP 503")
+        assertEquals("HTTP 503", svcUnavailable.error)
+        assertTrue("Last attempt timestamp set", svcUnavailable.lastAttemptAt > 0)
+    }
+
+    @Test
+    fun testSessionValidationRejectsDemoOrMissingUser() = runTest {
+        val testDispatcher = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        val backendClient = BackendApiClient(context) { BackendApiClient.ApiConfiguration() }
+        val authRepo = AuthenticationRepository(context, backendClient, fakeAuditLogger, testDispatcher)
+
+        // Case 1: Unauthenticated user
+        authRepo.signOut()
+        testScheduler.advanceUntilIdle()
+        val unauthResult = authRepo.validateSessionWithBackend()
+        assertTrue("Validation must fail when unauthenticated", unauthResult.isFailure)
+
+        // Case 2: Demo user
+        authRepo.signInDemoMode("Demo Tester", "demo@naarikavach.local")
+        testScheduler.advanceUntilIdle()
+        val demoResult = authRepo.validateSessionWithBackend()
+        assertTrue("Validation must fail for demo user (does not touch live backend)", demoResult.isFailure)
+        assertTrue("Error must note no live user session", demoResult.exceptionOrNull()?.message?.contains("live user session") == true)
+    }
+
+    @Test
+    fun testDemoModeIsolationNeverClaimsLivePoliceDispatch() = runTest {
+        val demoAdapter = DemoPoliceDispatchAdapter()
+        val dummyEvent = EmergencyEventEntity(
+            id = "demo_event_safety_112",
+            timestamp = System.currentTimeMillis(),
+            triggerType = "MANUAL_PANIC",
+            phraseDetected = "Manual panic trigger",
+            speakerScore = 1.0f,
+            latitude = 21.1458,
+            longitude = 79.0882,
+            accuracyMeters = 4f,
+            locationDescription = "Nagpur Central",
+            status = "ACTIVE",
+            trustedContactsNotifiedCount = 0,
+            policeNotified = false,
+            policeTrackingId = null,
+            isDemoMode = true
+        )
+
+        val result = demoAdapter.dispatchPoliceEmergencyAlert(dummyEvent, NagpurGeoConfig.SADAR_PILOT_CENTER)
+        assertEquals("Demo mode isolation must be UNAVAILABLE to avoid claiming real dispatch", DispatchStatus.UNAVAILABLE, result.status)
+        assertTrue("Tracking ticket must not be null", result.trackingTicket != null)
+        assertTrue("Tracking ticket must have DEMO prefix", result.trackingTicket!!.startsWith("DEMO-"))
+        assertTrue("Message must clearly state demo isolation", result.message.contains("Demo"))
+        assertFalse("Demo event must not claim real police received dispatch", result.message.contains("police received dispatch"))
+    }
+
+    // 10. Emergency Contacts Max 2 & Verification Tests
+    private class FakeTrustedContactDao : TrustedContactDao {
+        val contacts = mutableListOf<TrustedContactEntity>()
+        private var nextId = 1L
+
+        override fun getAllContacts(): Flow<List<TrustedContactEntity>> = flowOf(contacts)
+        override fun getActiveContacts(): Flow<List<TrustedContactEntity>> = flowOf(contacts.filter { it.isActive })
+        override suspend fun getActiveContactsList(): List<TrustedContactEntity> = contacts.filter { it.isActive }
+        override suspend fun getContactById(id: Long): TrustedContactEntity? = contacts.find { it.id == id }
+        override suspend fun insertContact(contact: TrustedContactEntity): Long {
+            val assignedId = if (contact.id == 0L) nextId++ else contact.id
+            val saved = contact.copy(id = assignedId)
+            contacts.removeAll { it.id == assignedId }
+            contacts.add(saved)
+            return assignedId
+        }
+        override suspend fun insertContacts(newContacts: List<TrustedContactEntity>) {
+            newContacts.forEach { insertContact(it) }
+        }
+        override suspend fun updateContact(contact: TrustedContactEntity) {
+            contacts.removeAll { it.id == contact.id }
+            contacts.add(contact)
+        }
+        override suspend fun deleteContact(contact: TrustedContactEntity) {
+            contacts.removeAll { it.id == contact.id }
+        }
+        override suspend fun deleteContactById(id: Long) {
+            contacts.removeAll { it.id == id }
+        }
+        override suspend fun getActiveContactCount(): Int = contacts.count { it.isActive }
+    }
+
+    @Test
+    fun testTrustedContactsEnforcesMaxTwoLimit() = runTest {
+        val fakeDao = FakeTrustedContactDao()
+        val repo = TrustedContactRepository(fakeDao)
+
+        // Contact 1: Valid
+        val id1 = repo.addContact("Sister", "Sister", "+919876543210", "sister@example.com")
+        assertTrue("First contact should be added successfully", id1 > 0)
+        assertEquals("Active count should be 1", 1, fakeDao.getActiveContactCount())
+
+        // Contact 2: Valid
+        val id2 = repo.addContact("Mother", "Mother", "+919876543211", "mother@example.com")
+        assertTrue("Second contact should be added successfully", id2 > 0)
+        assertEquals("Active count should be 2", 2, fakeDao.getActiveContactCount())
+
+        // Contact 3: Must be rejected because max 2 is enforced
+        val id3 = repo.addContact("Friend", "Friend", "+919876543212", "friend@example.com")
+        assertEquals("Third contact must be rejected with -1", -1L, id3)
+        assertEquals("Active count must remain 2", 2, fakeDao.getActiveContactCount())
+    }
+
+    @Test
+    fun testContactEmailVerificationAndLocationConsent() = runTest {
+        val fakeDao = FakeTrustedContactDao()
+        val repo = TrustedContactRepository(fakeDao)
+
+        val id = repo.addContact("Sister", "Sister", "+919876543210", "sister@example.com")
+        var contact = fakeDao.getContactById(id)
+        assertNotNull("Contact must exist", contact)
+        assertFalse("New contact email should be unverified initially", contact!!.isEmailVerified)
+        assertTrue("Location sharing should be enabled by default", contact.canShareLocation)
+
+        // Verify email
+        repo.verifyContactEmail(id)
+        contact = fakeDao.getContactById(id)
+        assertTrue("Email must be marked verified", contact!!.isEmailVerified)
+
+        // Revoke location sharing consent
+        repo.updateLocationConsent(id, false)
+        contact = fakeDao.getContactById(id)
+        assertFalse("Location sharing consent should now be revoked", contact!!.canShareLocation)
+    }
+
+    // 11. Microphone Coordination Tests
+    @Test
+    fun testMicrophoneCoordinatorTransitionsAndPreemption() {
+        val coordinator = com.example.assistant.MicrophoneCoordinator
+
+        // Reset to default
+        coordinator.resetToDefault(context)
+
+        // Request mic for ElevenLabs assistant
+        val granted = coordinator.requestMicForAssistant(context)
+        assertTrue("Mic should be granted to ElevenLabs assistant", granted)
+        assertEquals(
+            com.example.assistant.MicrophoneCoordinator.MicrophoneOwner.ELEVENLABS_ASSISTANT,
+            coordinator.currentOwner.value
+        )
+
+        // Emergency SOS preemption
+        var preemptionCallbackFired = false
+        coordinator.preemptForEmergency(context) {
+            preemptionCallbackFired = true
+        }
+        assertTrue("Emergency preemption callback must fire", preemptionCallbackFired)
+        assertEquals(
+            com.example.assistant.MicrophoneCoordinator.MicrophoneOwner.EMERGENCY_SOS,
+            coordinator.currentOwner.value
+        )
+
+        // Attempting to request mic while SOS is active must be denied
+        val requestDuringSos = coordinator.requestMicForAssistant(context)
+        assertFalse("Assistant must NEVER be granted mic during active Emergency SOS", requestDuringSos)
+        assertEquals(
+            com.example.assistant.MicrophoneCoordinator.MicrophoneOwner.EMERGENCY_SOS,
+            coordinator.currentOwner.value
+        )
+
+        // Release/reset
+        coordinator.resetToDefault(context)
+        assertEquals(
+            com.example.assistant.MicrophoneCoordinator.MicrophoneOwner.IDLE,
+            coordinator.currentOwner.value
+        )
+    }
+
+    // 12. ElevenLabs Assistant Session Contract Tests
+    @Test
+    fun testAssistantSessionContract() {
+        val sessionConfigured = com.example.data.remote.AssistantSessionResponse(
+            configured = true,
+            agentId = "agent_3701m51qchkaenxsjnzr8jvrm66",
+            agentName = "Raksha360 AI Assistant",
+            signedUrl = "wss://api.elevenlabs.io/v1/convai/conversation?agent_id=agent_3701m51qchkaenxsjnzr8jvrm66&token=test_tok"
+        )
+        assertTrue("Session must be configured", sessionConfigured.configured)
+        assertEquals("agent_3701m51qchkaenxsjnzr8jvrm66", sessionConfigured.agentId)
+        assertEquals("Raksha360 AI Assistant", sessionConfigured.agentName)
+        assertNotNull("Signed URL must be present when configured", sessionConfigured.signedUrl)
+        assertTrue(sessionConfigured.signedUrl!!.startsWith("wss://"))
+
+        val sessionUnconfigured = com.example.data.remote.AssistantSessionResponse(
+            configured = false,
+            agentId = "agent_3701m51qchkaenxsjnzr8jvrm66",
+            agentName = "Raksha360 AI Assistant",
+            signedUrl = null,
+            error = "ELEVENLABS_API_KEY is not configured on the backend server."
+        )
+        assertFalse("Session must not be configured", sessionUnconfigured.configured)
+        assertNull("Signed URL must be null when unconfigured", sessionUnconfigured.signedUrl)
+        assertTrue(sessionUnconfigured.error!!.contains("ELEVENLABS_API_KEY"))
     }
 }

@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { api, createLiveSocket, formatTime, getApiBase, isApiConfigured, signalTone, timeAgo, verifyDashboardToken } from './api.js';
 import MapLibreMap from './components/MapLibreMap.jsx';
+import NagpurAnimatedLogin from './components/NagpurAnimatedLogin.jsx';
 
 const NAV = [
   { id: 'overview', label: 'Command center', icon: Gauge, group: 'OPERATIONS' },
@@ -1909,7 +1910,7 @@ export default function App() {
     } catch (error) { notify(error.message, 'error'); }
   };
 
-  if (!authenticated) return <AuthGate onLogin={login} busy={authBusy} error={authError} onHealth={checkHealth} health={health} />;
+  if (!authenticated) return <NagpurAnimatedLogin onLogin={login} busy={authBusy} error={authError} onHealth={checkHealth} health={health} />;
 
   const currentNav = NAV.find((item) => item.id === page) || NAV[0];
   const NavIcon = currentNav.icon;

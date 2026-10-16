@@ -1,5 +1,9 @@
 package com.example.ui.screens.privacy
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import com.example.data.remote.BackendConnectionState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -12,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -28,6 +33,8 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.ExitToApp
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.ui.platform.LocalContext
+import com.example.ui.navigation.NavRoutes
 import coil.compose.AsyncImage
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material.icons.filled.Schedule
@@ -44,6 +51,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,14 +85,17 @@ fun PrivacyCenterScreen(
     var showDeleteVoiceDialog by remember { mutableStateOf(false) }
     var showDeleteAccountDialog by remember { mutableStateOf(false) }
     var showSignOutDialog by remember { mutableStateOf(false) }
+    var showRetentionDialog by remember { mutableStateOf(false) }
     val currentUser = viewModel.currentUser
+    val context = LocalContext.current
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFFF8FAFC))
+            .statusBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(16.dp)
+            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 100.dp)
             .testTag("privacy_center_screen")
     ) {
         // Top Header
@@ -196,8 +207,13 @@ fun PrivacyCenterScreen(
                     iconTint = SafeGreen,
                     iconBg = SafeGreen.copy(alpha = 0.12f),
                     title = "Location Access",
-                    subtitle = "Allowed (Precise)",
-                    onClick = { /* Manage location */ }
+                    subtitle = "Manage in Android App Settings",
+                    onClick = {
+                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = Uri.fromParts("package", context.packageName, null)
+                        }
+                        context.startActivity(intent)
+                    }
                 )
 
                 Spacer(modifier = Modifier.height(14.dp))
@@ -208,8 +224,13 @@ fun PrivacyCenterScreen(
                     iconTint = ShieldBlue,
                     iconBg = ShieldBlue.copy(alpha = 0.12f),
                     title = "Microphone Access",
-                    subtitle = "Allowed (Guard Mode)",
-                    onClick = { /* Manage mic */ }
+                    subtitle = "Manage in Android App Settings",
+                    onClick = {
+                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = Uri.fromParts("package", context.packageName, null)
+                        }
+                        context.startActivity(intent)
+                    }
                 )
 
                 Spacer(modifier = Modifier.height(14.dp))
@@ -220,8 +241,8 @@ fun PrivacyCenterScreen(
                     iconTint = Color(0xFF8E24AA), // Purple
                     iconBg = Color(0xFFF3E5F5),
                     title = "Evidence Storage",
-                    subtitle = "Encrypted on device",
-                    onClick = { /* View storage */ }
+                    subtitle = "Encrypted AES-256-GCM on device",
+                    onClick = { onNavigate(NavRoutes.EVIDENCE) }
                 )
 
                 Spacer(modifier = Modifier.height(14.dp))
@@ -232,8 +253,8 @@ fun PrivacyCenterScreen(
                     iconTint = Color(0xFF00897B), // Teal
                     iconBg = Color(0xFFE0F2F1),
                     title = "Data Sharing",
-                    subtitle = "Trusted contacts only",
-                    onClick = { /* Manage sharing */ }
+                    subtitle = "Manage trusted contacts",
+                    onClick = { onNavigate(NavRoutes.CONTACTS) }
                 )
 
                 Spacer(modifier = Modifier.height(14.dp))
@@ -244,8 +265,8 @@ fun PrivacyCenterScreen(
                     iconTint = EmergencyRed,
                     iconBg = Color(0xFFFFEBEE),
                     title = "Emergency Sharing",
-                    subtitle = "Police & trusted contacts",
-                    onClick = { /* Manage emergency sharing */ }
+                    subtitle = "Police dispatch & control room endpoint",
+                    onClick = { onNavigate(NavRoutes.BACKEND_SETTINGS) }
                 )
 
                 Spacer(modifier = Modifier.height(14.dp))
@@ -256,8 +277,8 @@ fun PrivacyCenterScreen(
                     iconTint = Color(0xFF546E7A), // Slate
                     iconBg = Color(0xFFECEFF1),
                     title = "Data Retention",
-                    subtitle = "User controlled",
-                    onClick = { /* Manage retention */ }
+                    subtitle = "Strictly user-controlled on-device",
+                    onClick = { showRetentionDialog = true }
                 )
 
                 Spacer(modifier = Modifier.height(14.dp))
@@ -286,14 +307,41 @@ fun PrivacyCenterScreen(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Backend endpoint controls the connection between this phone and the laptop control room.
+                // Backend endpoint controls the connection to the Raksha360 control room.
+                val connectionState by viewModel.connectionState.collectAsState()
+                val connectionSubtitle = when (val state = connectionState) {
+                    is BackendConnectionState.Connected -> {
+                        if (state.isDemoMode) "Connected (Demo Mode active) · ${state.database ?: "DB"} ${state.latencyMs ?: 0}ms"
+                        else "Connected to control room · Live dispatch ready (${state.latencyMs ?: 0}ms)"
+                    }
+                    is BackendConnectionState.Connecting -> "Checking control room status…"
+                    is BackendConnectionState.Offline -> "Offline · Local safety & siren active"
+                    is BackendConnectionState.AuthenticationRequired -> "Sign in with Google to enable live dispatch"
+                    is BackendConnectionState.ServiceUnavailable -> "Control room unreachable · Offline safety active"
+                }
+
                 PrivacyControlRow(
                     icon = Icons.Default.Cloud,
                     iconTint = ShieldBlue,
                     iconBg = ShieldBlue.copy(alpha = 0.12f),
                     title = "Backend & Control Room Connection",
-                    subtitle = if (viewModel.backendEndpointConfigured.value && !viewModel.isDemoMode.value) "Local server configured" else "Not connected · Demo mode may be active",
+                    subtitle = connectionSubtitle,
                     onClick = { onNavigate(com.example.ui.navigation.NavRoutes.BACKEND_SETTINGS) }
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Interactive App Tour Replay
+                PrivacyControlRow(
+                    icon = Icons.Default.Security,
+                    iconTint = ShieldBlue,
+                    iconBg = Color(0xFFEFF6FF),
+                    title = "Interactive App Tour",
+                    subtitle = "Replay the 8-step guided safety walkthrough",
+                    onClick = {
+                        viewModel.startAppTour()
+                        onNavigate(com.example.ui.navigation.NavRoutes.HOME)
+                    }
                 )
 
                 Spacer(modifier = Modifier.height(14.dp))
@@ -342,13 +390,15 @@ fun PrivacyCenterScreen(
     if (showDeleteAccountDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteAccountDialog = false },
-            title = { Text("Delete All Data?") },
-            text = { Text("This will wipe all local caches, evidence files, and reset Raksha360 on this device.") },
+            title = { Text("Delete Account & All Data?") },
+            text = { Text("This will permanently wipe all local database tables, encrypted evidence, voice profile embeddings, and credentials from this device.") },
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.deleteVoiceProfile()
-                        showDeleteAccountDialog = false
+                        viewModel.deleteAccountAndAllData {
+                            showDeleteAccountDialog = false
+                            onNavigate(NavRoutes.SIGN_IN)
+                        }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = EmergencyRed)
                 ) {
@@ -358,6 +408,30 @@ fun PrivacyCenterScreen(
             dismissButton = {
                 TextButton(onClick = { showDeleteAccountDialog = false }) {
                     Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Data Retention Policy Dialog
+    if (showRetentionDialog) {
+        AlertDialog(
+            onDismissRequest = { showRetentionDialog = false },
+            title = { Text("Data Retention Policy") },
+            text = {
+                Text(
+                    "• All audio recordings, evidence files, and GPS traces are stored encrypted strictly on your device.\n\n" +
+                    "• Data is retained only until you explicitly delete it.\n\n" +
+                    "• In Demo Mode, no remote servers receive any coordinates or identities.\n\n" +
+                    "• Production backend synchronization only transmits events during active emergencies or explicit user check-ins."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showRetentionDialog = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = ShieldBlue)
+                ) {
+                    Text("Got it")
                 }
             }
         )
@@ -374,6 +448,7 @@ fun PrivacyCenterScreen(
                     onClick = {
                         viewModel.signOut()
                         showSignOutDialog = false
+                        onNavigate(NavRoutes.SIGN_IN)
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = NavyDark)
                 ) {

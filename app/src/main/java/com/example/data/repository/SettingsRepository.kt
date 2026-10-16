@@ -42,7 +42,14 @@ class SettingsRepository(context: Context) {
         return stored
     }
 
-    private val _policeEndpointConfigured = MutableStateFlow(prefs.getBoolean("police_endpoint_configured", false))
+    private fun resolveInitialConfiguredState(): Boolean {
+        if (prefs.contains("police_endpoint_configured")) {
+            return prefs.getBoolean("police_endpoint_configured", true)
+        }
+        return DEFAULT_API_URL.isNotBlank()
+    }
+
+    private val _policeEndpointConfigured = MutableStateFlow(resolveInitialConfiguredState())
     val policeEndpointConfigured: StateFlow<Boolean> = _policeEndpointConfigured.asStateFlow()
 
     private val _policeEndpointUrl = MutableStateFlow(resolveInitialEndpointUrl())
@@ -60,6 +67,16 @@ class SettingsRepository(context: Context) {
 
     private val _journeyEtaMinutes = MutableStateFlow(prefs.getInt("journey_eta_minutes", 30))
     val journeyEtaMinutes: StateFlow<Int> = _journeyEtaMinutes.asStateFlow()
+
+    // Interactive 8-Step App Tour state
+    private val _isAppTourCompleted = MutableStateFlow(prefs.getBoolean("app_tour_completed", false))
+    val isAppTourCompleted: StateFlow<Boolean> = _isAppTourCompleted.asStateFlow()
+
+    private val _isAppTourActive = MutableStateFlow(false)
+    val isAppTourActive: StateFlow<Boolean> = _isAppTourActive.asStateFlow()
+
+    private val _currentTourStep = MutableStateFlow(1)
+    val currentTourStep: StateFlow<Int> = _currentTourStep.asStateFlow()
 
     fun setGuardModeEnabled(enabled: Boolean) {
         prefs.edit().putBoolean("guard_mode_enabled", enabled).apply()
@@ -99,6 +116,18 @@ class SettingsRepository(context: Context) {
         _policeAuthToken.value = trimmedToken
     }
 
+    fun resetToDefaultEndpoint() {
+        prefs.edit()
+            .putBoolean("police_endpoint_configured", true)
+            .putString("police_endpoint_url", DEFAULT_API_URL)
+            .putString("police_auth_token", "")
+            .apply()
+        _policeEndpointConfigured.value = true
+        _policeEndpointUrl.value = DEFAULT_API_URL
+        _policeAuthToken.value = ""
+    }
+
+
     fun setJourneyState(active: Boolean, destination: String = "", etaMinutes: Int = 30) {
         prefs.edit()
             .putBoolean("journey_active", active)
@@ -108,5 +137,30 @@ class SettingsRepository(context: Context) {
         _isJourneyActive.value = active
         _journeyDestination.value = destination
         _journeyEtaMinutes.value = etaMinutes
+    }
+
+    fun setAppTourCompleted(completed: Boolean) {
+        prefs.edit().putBoolean("app_tour_completed", completed).apply()
+        _isAppTourCompleted.value = completed
+    }
+
+    fun setAppTourActive(active: Boolean) {
+        _isAppTourActive.value = active
+    }
+
+    fun setTourStep(step: Int) {
+        _currentTourStep.value = step.coerceIn(1, 8)
+    }
+
+    fun startTour() {
+        _currentTourStep.value = 1
+        _isAppTourActive.value = true
+    }
+
+    fun dismissTour(markCompleted: Boolean = true) {
+        _isAppTourActive.value = false
+        if (markCompleted) {
+            setAppTourCompleted(true)
+        }
     }
 }

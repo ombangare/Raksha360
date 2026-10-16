@@ -32,10 +32,16 @@ class GuardModeService : Service() {
     companion object {
         const val ACTION_START_GUARD = "com.example.action.START_GUARD"
         const val ACTION_STOP_GUARD = "com.example.action.STOP_GUARD"
+        const val ACTION_PAUSE_LISTENING = "com.example.action.PAUSE_LISTENING"
+        const val ACTION_RESUME_LISTENING = "com.example.action.RESUME_LISTENING"
         private const val NOTIFICATION_ID = 2001
 
         @Volatile
         var isServiceRunning = false
+            private set
+
+        @Volatile
+        var isListeningPaused = false
             private set
 
         fun start(context: Context) {
@@ -55,6 +61,20 @@ class GuardModeService : Service() {
             }
             context.startService(intent)
         }
+
+        fun pauseListening(context: Context) {
+            val intent = Intent(context, GuardModeService::class.java).apply {
+                action = ACTION_PAUSE_LISTENING
+            }
+            context.startService(intent)
+        }
+
+        fun resumeListening(context: Context) {
+            val intent = Intent(context, GuardModeService::class.java).apply {
+                action = ACTION_RESUME_LISTENING
+            }
+            context.startService(intent)
+        }
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.IO)
@@ -67,9 +87,24 @@ class GuardModeService : Service() {
         when (intent?.action) {
             ACTION_START_GUARD -> startGuardMode()
             ACTION_STOP_GUARD -> stopGuardMode()
+            ACTION_PAUSE_LISTENING -> handlePauseListening()
+            ACTION_RESUME_LISTENING -> handleResumeListening()
             else -> startGuardMode()
         }
         return START_NOT_STICKY
+    }
+
+    private fun handlePauseListening() {
+        if (!isServiceRunning) return
+        isListeningPaused = true
+        listeningJob?.cancel()
+        cleanupAudioRecord()
+    }
+
+    private fun handleResumeListening() {
+        if (!isServiceRunning || !isListeningPaused) return
+        isListeningPaused = false
+        startAudioListeningLoop()
     }
 
     private fun startGuardMode() {

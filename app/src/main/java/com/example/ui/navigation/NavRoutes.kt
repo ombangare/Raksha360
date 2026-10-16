@@ -18,4 +18,5 @@ object NavRoutes {
     const val PRIVACY = "privacy"
     const val BACKEND_SETTINGS = "backend_settings"
     const val EVIDENCE = "evidence"
+    const val ASSISTANT = "assistant"
 }

@@ -1,0 +1,1147 @@
+/* ==============================================================================
+   Raksha360 - Nagpur Command Center Animated Login Styles
+   Theme: Midnight Navy, Cyan, Electric Blue, Warm Amber, Saffron
+   ============================================================================== */
+
+@keyframes pulseGlow {
+  0%, 100% { opacity: 0.65; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.04); }
+}
+
+@keyframes sweepLight {
+  0% { transform: translateX(-100%) rotate(25deg); }
+  100% { transform: translateX(200%) rotate(25deg); }
+}
+
+@keyframes floatEmblem {
+  0%, 100% { transform: translateY(0) rotateX(0); }
+  50% { transform: translateY(-6px) rotateX(4deg); }
+}
+
+@keyframes radarSweep {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes pulseRing {
+  0% { transform: scale(0.85); opacity: 0.9; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+
+@keyframes neonBorderPulse {
+  0%, 100% { border-color: rgba(56, 189, 248, 0.45); box-shadow: 0 0 25px rgba(37, 99, 235, 0.25), inset 0 0 15px rgba(56, 189, 248, 0.08); }
+  50% { border-color: rgba(249, 115, 22, 0.55); box-shadow: 0 0 35px rgba(249, 115, 22, 0.22), inset 0 0 20px rgba(56, 189, 248, 0.14); }
+}
+
+/* Master Login Container */
+.nagpur-login-viewport {
+  position: relative;
+  min-height: 100vh;
+  width: 100%;
+  background: radial-gradient(circle at 40% 30%, #0c1833 0%, #060b18 65%, #03060c 100%);
+  color: #FFFFFF;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Background Visual Layer */
+.nagpur-canvas-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Atmospheric Glow Layers */
+.nagpur-ambient-glow-cyan {
+  position: absolute;
+  top: 15%;
+  left: 20%;
+  width: 500px;
+  height: 500px;
+  background: radial-gradient(circle, rgba(14, 165, 233, 0.15) 0%, transparent 70%);
+  filter: blur(60px);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.nagpur-ambient-glow-amber {
+  position: absolute;
+  bottom: 10%;
+  right: 15%;
+  width: 450px;
+  height: 450px;
+  background: radial-gradient(circle, rgba(249, 115, 22, 0.14) 0%, transparent 70%);
+  filter: blur(55px);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Grid & Perspective Lines */
+.nagpur-control-room-grid {
+  position: absolute;
+  inset: 0;
+  background-image: 
+    linear-gradient(rgba(56, 189, 248, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Top Navigation Bar */
+.nagpur-top-bar {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 36px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(6, 11, 24, 0.65);
+  backdrop-filter: blur(12px);
+}
+
+.nagpur-branding-group {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.raksha-shield-emblem {
+  position: relative;
+  width: 46px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: floatEmblem 6s ease-in-out infinite;
+  filter: drop-shadow(0 0 12px rgba(245, 158, 11, 0.45));
+}
+
+.nagpur-brand-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.nagpur-brand-title {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  color: #FFFFFF;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nagpur-brand-title span {
+  color: #38BDF8;
+}
+
+.nagpur-brand-dept {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94A3B8;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.nagpur-brand-tagline {
+  font-size: 10px;
+  font-weight: 500;
+  color: #64748B;
+  letter-spacing: 0.08em;
+  margin-top: 2px;
+}
+
+.nagpur-marathi-lockup {
+  display: flex;
+  flex-direction: column;
+  text-align: center;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0 24px;
+}
+
+.nagpur-marathi-main {
+  font-size: 15px;
+  font-weight: 700;
+  color: #E2E8F0;
+  letter-spacing: 0.04em;
+}
+
+.nagpur-marathi-sub {
+  font-size: 10px;
+  font-weight: 600;
+  color: #F59E0B;
+  letter-spacing: 0.14em;
+  margin-top: 2px;
+}
+
+.nagpur-tricolor-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #CBD5E1;
+}
+
+.tricolor-strip {
+  display: flex;
+  flex-direction: column;
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.tricolor-strip span:nth-child(1) { height: 33.3%; background: #FF9933; }
+.tricolor-strip span:nth-child(2) { height: 33.3%; background: #FFFFFF; }
+.tricolor-strip span:nth-child(3) { height: 33.3%; background: #138808; }
+
+/* Main Stage Layout */
+.nagpur-main-stage {
+  position: relative;
+  z-index: 5;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(380px, 460px);
+  gap: 32px;
+  padding: 24px 36px;
+  align-items: center;
+  max-width: 1720px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* Left Showcase Area */
+.nagpur-showcase-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 580px;
+}
+
+/* Landmarks Horizon */
+.nagpur-landmarks-horizon {
+  position: relative;
+  height: 180px;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-around;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed rgba(56, 189, 248, 0.15);
+}
+
+.landmark-callout {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+}
+
+.landmark-callout-deekshabhoomi {
+  position: absolute;
+  left: 14%;
+  bottom: 0;
+}
+
+.landmark-callout-zeromile {
+  position: absolute;
+  right: 18%;
+  bottom: 0;
+}
+
+.landmark-badge {
+  background: rgba(8, 18, 38, 0.85);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #FDE68A;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.landmark-badge i {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #F59E0B;
+  box-shadow: 0 0 8px #F59E0B;
+}
+
+.landmark-svg-container {
+  filter: drop-shadow(0 0 16px rgba(56, 189, 248, 0.4));
+  transition: transform 0.3s ease;
+}
+
+/* Interactive 3D Digital Twin Map View */
+.nagpur-map-stage-3d {
+  position: relative;
+  width: 100%;
+  height: 380px;
+  margin: 16px 0;
+  perspective: 1000px;
+}
+
+.nagpur-isomap-plane {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 16px;
+  transform: rotateX(28deg) rotateZ(-3deg);
+  transform-style: preserve-3d;
+  background: radial-gradient(ellipse at center, rgba(14, 165, 233, 0.08) 0%, rgba(6, 11, 24, 0.95) 75%);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.65), 0 0 35px rgba(37, 99, 235, 0.18);
+  overflow: hidden;
+}
+
+.nagpur-vector-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Floating Pins on Map */
+.nagpur-pin-node {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: auto;
+  cursor: default;
+  transition: transform 0.2s ease;
+}
+
+.nagpur-pin-node:hover {
+  transform: translate(-50%, -55%) scale(1.08);
+}
+
+.nagpur-pin-marker {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 14px currentColor;
+}
+
+.nagpur-pin-pulse {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  animation: pulseRing 2.4s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+}
+
+.nagpur-pin-card {
+  margin-top: 6px;
+  background: rgba(8, 14, 29, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+
+.nagpur-pin-card small {
+  font-size: 8px;
+  font-weight: 500;
+  color: #94A3B8;
+  letter-spacing: 0.04em;
+}
+
+/* Floating Overlay HUD telemetry */
+.nagpur-hud-incident-pill {
+  position: absolute;
+  top: 18px;
+  left: 20px;
+  background: rgba(8, 14, 29, 0.88);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  border-radius: 10px;
+  padding: 10px 14px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  z-index: 4;
+}
+
+.nagpur-hud-incident-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #F87171;
+  text-transform: uppercase;
+}
+
+.hud-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #EF4444;
+  box-shadow: 0 0 10px #EF4444;
+  animation: pulseGlow 1.4s ease-in-out infinite;
+}
+
+.nagpur-hud-metric-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.nagpur-hud-metric-val {
+  font-size: 20px;
+  font-weight: 800;
+  color: #FFFFFF;
+  line-height: 1;
+}
+
+.nagpur-hud-metric-sub {
+  font-size: 11px;
+  color: #94A3B8;
+}
+
+/* Telemetry quick indicators card */
+.nagpur-hud-metrics-bar {
+  position: absolute;
+  top: 18px;
+  right: 20px;
+  display: flex;
+  gap: 10px;
+  z-index: 4;
+}
+
+.nagpur-metric-chip {
+  background: rgba(8, 14, 29, 0.88);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: 8px;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  backdrop-filter: blur(8px);
+}
+
+.metric-chip-icon {
+  color: #38BDF8;
+}
+
+.metric-chip-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.metric-chip-val {
+  font-size: 13px;
+  font-weight: 700;
+  color: #FFFFFF;
+  line-height: 1.1;
+}
+
+.metric-chip-lbl {
+  font-size: 9px;
+  color: #94A3B8;
+  letter-spacing: 0.02em;
+}
+
+/* Bottom Capability Ribbon */
+.nagpur-capabilities-dock {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.capability-dock-btn {
+  background: rgba(10, 18, 38, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  transition: all 0.2s ease;
+  cursor: default;
+}
+
+.capability-dock-btn:hover {
+  background: rgba(14, 165, 233, 0.12);
+  border-color: rgba(56, 189, 248, 0.35);
+  transform: translateY(-2px);
+}
+
+.capability-dock-btn svg {
+  color: #38BDF8;
+  filter: drop-shadow(0 0 6px rgba(56, 189, 248, 0.4));
+}
+
+.capability-dock-btn span {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #CBD5E1;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+/* ==============================================================================
+   Right-Side Operator Login Terminal
+   ============================================================================== */
+
+.nagpur-login-terminal-pane {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.nagpur-terminal-card {
+  position: relative;
+  width: 100%;
+  background: rgba(8, 15, 31, 0.88);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 20px;
+  padding: 28px 26px 22px;
+  backdrop-filter: blur(20px);
+  box-shadow: 
+    0 24px 60px rgba(0, 0, 0, 0.65),
+    0 0 30px rgba(37, 99, 235, 0.2),
+    inset 0 1px 1px rgba(255, 255, 255, 0.15);
+  animation: neonBorderPulse 8s ease-in-out infinite;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Underglow Accent */
+.terminal-underglow {
+  position: absolute;
+  bottom: -15px;
+  left: 10%;
+  right: 10%;
+  height: 25px;
+  background: radial-gradient(ellipse at center, rgba(249, 115, 22, 0.45) 0%, transparent 75%);
+  filter: blur(14px);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Terminal Header */
+.terminal-header {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 14px;
+}
+
+.terminal-title-stack {
+  display: flex;
+  flex-direction: column;
+}
+
+.terminal-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #94A3B8;
+  text-transform: uppercase;
+}
+
+.terminal-main-title {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #FFFFFF;
+  margin: 2px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.terminal-main-title span {
+  color: #F97316;
+}
+
+.terminal-station-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #38BDF8;
+  text-transform: uppercase;
+  margin-top: 1px;
+}
+
+.terminal-desc-sub {
+  font-size: 9px;
+  color: #64748B;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+
+/* Mini Nagpur Radar Badge */
+.nagpur-mini-radar-badge {
+  position: relative;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  background: radial-gradient(circle, rgba(14, 165, 233, 0.15) 0%, rgba(6, 11, 24, 0.9) 80%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  box-shadow: 0 0 16px rgba(37, 99, 235, 0.35);
+}
+
+.radar-sweep-beam {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 50%;
+  height: 50%;
+  transform-origin: 0% 0%;
+  background: conic-gradient(from 0deg, rgba(56, 189, 248, 0.6) 0deg, transparent 60deg);
+  animation: radarSweep 3.2s linear infinite;
+  pointer-events: none;
+}
+
+.radar-crosshairs {
+  position: absolute;
+  inset: 0;
+  background-image: 
+    linear-gradient(rgba(56, 189, 248, 0.25) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.25) 1px, transparent 1px);
+  background-size: 14px 14px;
+  background-position: center;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.radar-label {
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: #FDE68A;
+  z-index: 2;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.8);
+}
+
+/* Operator Badge Callout */
+.operator-callout-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(14, 165, 233, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+
+.operator-icon-wrap {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: rgba(37, 99, 235, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #38BDF8;
+  flex-shrink: 0;
+}
+
+.operator-info-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.operator-head-text {
+  font-size: 11px;
+  font-weight: 700;
+  color: #FFFFFF;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.operator-sub-text {
+  font-size: 10px;
+  color: #94A3B8;
+  margin-top: 1px;
+}
+
+/* Access Token Form */
+.terminal-auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.terminal-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.terminal-field-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #CBD5E1;
+  letter-spacing: 0.02em;
+}
+
+.terminal-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: rgba(6, 11, 24, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  transition: all 0.2s ease;
+}
+
+.terminal-input-wrapper:focus-within {
+  border-color: #38BDF8;
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.25), 0 0 16px rgba(56, 189, 248, 0.2);
+}
+
+.terminal-input-icon {
+  padding-left: 14px;
+  color: #64748B;
+  display: flex;
+  align-items: center;
+}
+
+.terminal-token-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 13px 12px;
+  color: #FFFFFF;
+  font-size: 14px;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+}
+
+.terminal-token-input::placeholder {
+  color: #475569;
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+}
+
+.terminal-visibility-btn {
+  background: transparent;
+  border: none;
+  padding: 10px 14px;
+  color: #94A3B8;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s ease;
+}
+
+.terminal-visibility-btn:hover {
+  color: #FFFFFF;
+}
+
+/* Action Button */
+.terminal-submit-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 14px 20px;
+  border-radius: 10px;
+  border: none;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #FFFFFF;
+  background: linear-gradient(135deg, #2563EB 0%, #D97706 60%, #EA580C 100%);
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(234, 88, 12, 0.35), 0 2px 6px rgba(37, 99, 235, 0.3);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  overflow: hidden;
+}
+
+.terminal-submit-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 28px rgba(234, 88, 12, 0.5), 0 4px 12px rgba(37, 99, 235, 0.4);
+}
+
+.terminal-submit-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.terminal-submit-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.terminal-submit-sweep {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.25), transparent);
+  transform: translateX(-100%);
+  transition: transform 0.6s ease;
+}
+
+.terminal-submit-btn:hover .terminal-submit-sweep {
+  animation: sweepLight 1.4s ease infinite;
+}
+
+/* Checkbox & Options */
+.terminal-options-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+}
+
+.terminal-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #94A3B8;
+  cursor: pointer;
+  user-select: none;
+}
+
+.terminal-checkbox {
+  accent-color: #2563EB;
+  cursor: pointer;
+}
+
+.terminal-forgot-link {
+  color: #60A5FA;
+  text-decoration: none;
+  font-weight: 500;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.terminal-forgot-link:hover {
+  text-decoration: underline;
+  color: #93C5FD;
+}
+
+/* Real-Time Backend Connection Pill */
+.terminal-connection-pill {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: rgba(6, 11, 24, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+
+.conn-pill-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.conn-status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #10B981;
+  box-shadow: 0 0 10px #10B981;
+}
+
+.conn-status-dot.dot-checking {
+  background: #F59E0B;
+  box-shadow: 0 0 10px #F59E0B;
+  animation: pulseGlow 1.2s infinite;
+}
+
+.conn-status-dot.dot-error {
+  background: #EF4444;
+  box-shadow: 0 0 10px #EF4444;
+}
+
+.conn-text-stack {
+  display: flex;
+  flex-direction: column;
+}
+
+.conn-label-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #FFFFFF;
+}
+
+.conn-label-sub {
+  font-size: 10px;
+  color: #94A3B8;
+}
+
+.conn-pill-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 11px;
+  color: #34D399;
+  font-weight: 600;
+}
+
+/* Amber Operational Disclosure Card */
+.terminal-disclosure-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.disclosure-icon {
+  color: #F59E0B;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.disclosure-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.disclosure-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #FDE68A;
+}
+
+.disclosure-desc {
+  font-size: 10px;
+  color: #D1D5DB;
+  line-height: 1.35;
+}
+
+/* Nagpur Skyline Silhouette Footer */
+.terminal-skyline-footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.skyline-svg-silhouette {
+  width: 100%;
+  height: 28px;
+  opacity: 0.65;
+}
+
+.skyline-caption {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: #94A3B8;
+  text-transform: uppercase;
+}
+
+.skyline-caption span {
+  color: #F59E0B;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+/* Inline Errors */
+.terminal-inline-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(239, 68, 68, 0.14);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: #FCA5A5;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Success Overlay State */
+.terminal-success-pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(16, 185, 129, 0.5);
+  border-radius: 8px;
+  padding: 10px;
+  color: #6EE7B7;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* Modal Helper for Token */
+.nagpur-token-help-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 20px;
+}
+
+.nagpur-token-modal-card {
+  background: #0B132B;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 16px;
+  padding: 24px;
+  max-width: 460px;
+  width: 100%;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
+}
+
+.nagpur-token-modal-card h3 {
+  margin: 0 0 10px;
+  font-size: 16px;
+  color: #FFFFFF;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nagpur-token-modal-card p {
+  font-size: 12px;
+  color: #CBD5E1;
+  line-height: 1.6;
+  margin: 0 0 16px;
+}
+
+.nagpur-token-modal-card code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #38BDF8;
+}
+
+/* ==============================================================================
+   Responsive Queries
+   ============================================================================== */
+
+@media (max-width: 1180px) {
+  .nagpur-main-stage {
+    grid-template-columns: 1fr;
+    gap: 28px;
+    padding: 20px 24px;
+  }
+  .nagpur-showcase-pane {
+    min-height: auto;
+  }
+  .nagpur-map-stage-3d {
+    height: 300px;
+  }
+  .nagpur-terminal-card {
+    max-width: 480px;
+    margin: 0 auto;
+  }
+}
+
+@media (max-width: 768px) {
+  .nagpur-top-bar {
+    padding: 12px 18px;
+  }
+  .nagpur-marathi-lockup {
+    display: none;
+  }
+  .nagpur-tricolor-badge {
+    padding: 4px 10px;
+    font-size: 10px;
+  }
+  .nagpur-main-stage {
+    padding: 14px 16px 28px;
+    gap: 20px;
+  }
+  .nagpur-landmarks-horizon {
+    height: 120px;
+  }
+  .nagpur-map-stage-3d {
+    height: 240px;
+    margin: 8px 0;
+  }
+  .nagpur-capabilities-dock {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+  .nagpur-terminal-card {
+    padding: 20px 18px;
+    border-radius: 16px;
+  }
+  .terminal-main-title {
+    font-size: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nagpur-terminal-card,
+  .raksha-shield-emblem,
+  .radar-sweep-beam,
+  .nagpur-pin-pulse,
+  .hud-pulse-dot {
+    animation: none !important;
+  }
+  .terminal-submit-sweep {
+    display: none !important;
+  }
+}

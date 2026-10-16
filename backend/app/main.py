@@ -18,9 +18,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 from pydantic import BaseModel, Field, field_validator
@@ -372,11 +374,40 @@ def initialize_database() -> None:
                 email TEXT NOT NULL,
                 name TEXT NOT NULL,
                 relationship TEXT NOT NULL DEFAULT '',
+                phone TEXT NOT NULL DEFAULT '',
+                is_verified INTEGER NOT NULL DEFAULT 0,
+                verification_code TEXT NOT NULL DEFAULT '',
+                can_share_location INTEGER NOT NULL DEFAULT 1,
+                user_id TEXT NOT NULL DEFAULT '',
                 notify_by_email INTEGER NOT NULL DEFAULT 0,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY (device_id, email)
             );
+            CREATE TABLE IF NOT EXISTS live_location_shares (
+                token_hash TEXT PRIMARY KEY,
+                event_id TEXT NOT NULL REFERENCES incidents(event_id),
+                user_id TEXT DEFAULT '',
+                device_id TEXT DEFAULT '',
+                expires_at INTEGER NOT NULL,
+                is_revoked INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_live_location_shares_event ON live_location_shares(event_id);
+            CREATE TABLE IF NOT EXISTS sent_sos_emails (
+                id TEXT PRIMARY KEY,
+                event_id TEXT NOT NULL REFERENCES incidents(event_id),
+                recipient_email TEXT NOT NULL,
+                recipient_name TEXT NOT NULL,
+                delivery_mode TEXT NOT NULL,
+                delivery_status TEXT NOT NULL,
+                attempted_at INTEGER NOT NULL,
+                sent_at INTEGER,
+                live_track_url TEXT,
+                error_message TEXT,
+                UNIQUE(event_id, recipient_email)
+            );
+            CREATE INDEX IF NOT EXISTS idx_sent_sos_emails_event ON sent_sos_emails(event_id);
             CREATE TABLE IF NOT EXISTS offline_email_deliveries (
                 device_id TEXT NOT NULL,
                 incident_id TEXT NOT NULL,
@@ -411,10 +442,18 @@ def initialize_database() -> None:
             CREATE INDEX IF NOT EXISTS idx_user_sessions_uid ON user_sessions(uid);
             """
             )
-            try:
-                conn.execute("ALTER TABLE police_station_directory ADD COLUMN coordinate_status TEXT DEFAULT 'OFFICIAL_ADDRESS_ONLY'")
-            except sqlite3.OperationalError:
-                pass
+            for alter_sql in (
+                "ALTER TABLE police_station_directory ADD COLUMN coordinate_status TEXT DEFAULT 'OFFICIAL_ADDRESS_ONLY'",
+                "ALTER TABLE emergency_contacts ADD COLUMN phone TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE emergency_contacts ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE emergency_contacts ADD COLUMN verification_code TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE emergency_contacts ADD COLUMN can_share_location INTEGER NOT NULL DEFAULT 1",
+                "ALTER TABLE emergency_contacts ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
+            ):
+                try:
+                    conn.execute(alter_sql)
+                except Exception:
+                    pass
         # Public station directory is a separate reference dataset, not live dispatch status.
         # Seed from the checked-in public snapshot; preserve any manually reviewed coordinates.
         directory_path = ROOT_DIR.parent / "reference-data" / "nagpur-public" / "nagpur_police_stations.json"
@@ -677,8 +716,36 @@ class TrustedContactAlert(BaseModel):
     triggerType: str = Field(default="SOS", max_length=80)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
+    accuracyMeters: float | None = Field(default=None, ge=0, le=100000)
+    lastKnownLocation: dict[str, Any] | None = None
     address: str = Field(default="Location unavailable", max_length=300)
     liveTrackingUrl: str | None = Field(default=None, max_length=500)
+
+
+class EmergencyContactInput(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    name: str = Field(min_length=1, max_length=120)
+    relationship: str = Field(default="", max_length=80)
+    phone: str = Field(default="", max_length=30)
+    notifyByEmail: bool = True
+    canShareLocation: bool = True
+
+    @field_validator("email")
+    @classmethod
+    def validate_and_normalize_email(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", v):
+            raise ValueError("Invalid email format.")
+        return v
+
+
+class VerifyCodeInput(BaseModel):
+    code: str = Field(min_length=4, max_length=10)
+
+
+class ContactPreferencePatch(BaseModel):
+    notifyByEmail: bool | None = None
+    canShareLocation: bool | None = None
 
 
 class ReportCreate(BaseModel):
@@ -994,8 +1061,23 @@ def _smtp_is_configured() -> bool:
     return all(os.getenv(key, "").strip() for key in ("RAKSHA360_SMTP_HOST", "RAKSHA360_SMTP_FROM_EMAIL"))
 
 
-def send_offline_location_email(contact: dict[str, Any], device: dict[str, Any], incident_id: str) -> None:
-    """Send a consented last-known-location notice. This is not a live-location message."""
+def _apps_script_is_configured() -> bool:
+    url = os.getenv("GOOGLE_APPS_SCRIPT_URL", "").strip()
+    secret = os.getenv("GOOGLE_APPS_SCRIPT_SECRET", "").strip()
+    return bool(url and secret and url.startswith("https://script.google.com/macros/s/"))
+
+
+def _email_provider_is_configured() -> bool:
+    return _apps_script_is_configured() or _smtp_is_configured()
+
+
+def is_nagpur_fallback(lat: float | None, lon: float | None) -> bool:
+    if lat is None or lon is None:
+        return False
+    return abs(lat - 21.1458) < 0.001 and abs(lon - 79.0882) < 0.001
+
+
+def _send_raw_smtp(to_email: str, subject: str, body: str) -> None:
     host = os.getenv("RAKSHA360_SMTP_HOST", "").strip()
     sender = os.getenv("RAKSHA360_SMTP_FROM_EMAIL", "").strip()
     if not host or not sender:
@@ -1004,25 +1086,261 @@ def send_offline_location_email(contact: dict[str, Any], device: dict[str, Any],
     username = os.getenv("RAKSHA360_SMTP_USERNAME", "").strip()
     password = os.getenv("RAKSHA360_SMTP_PASSWORD", "")
     use_tls = os.getenv("RAKSHA360_SMTP_USE_TLS", "true").lower() == "true"
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = sender
+    message["To"] = to_email
+    message.set_content(body)
+
+    with smtplib.SMTP(host, port, timeout=15) as server:
+        if use_tls:
+            server.starttls()
+        if username:
+            server.login(username, password)
+        server.send_message(message)
+
+
+def send_email_via_apps_script(
+    recipient_email: str,
+    recipient_name: str,
+    subject: str,
+    body: str,
+    event_id: str,
+    user_name: str = "Raksha360 Citizen",
+    live_track_url: str | None = None,
+    location_data: dict[str, Any] | None = None,
+    is_demo: bool = False,
+) -> dict[str, Any]:
+    url = os.getenv("GOOGLE_APPS_SCRIPT_URL", "").strip()
+    secret = os.getenv("GOOGLE_APPS_SCRIPT_SECRET", "").strip()
+    if not url or not secret:
+        return {
+            "status": "PROVIDER_NOT_CONFIGURED",
+            "recipient": recipient_email,
+            "error": "GOOGLE_APPS_SCRIPT_URL or GOOGLE_APPS_SCRIPT_SECRET not configured",
+        }
+
+    now_ms = utc_ms()
+    nonce = str(uuid.uuid4())
+    message_to_sign = f"{now_ms}:{nonce}:{recipient_email}:{event_id}".encode("utf-8")
+    sig = hmac.new(secret.encode("utf-8"), message_to_sign, hashlib.sha256).hexdigest()
+
+    payload = {
+        "secret": secret,
+        "timestamp": now_ms,
+        "nonce": nonce,
+        "signature": sig,
+        "recipient": recipient_email,
+        "recipientName": recipient_name,
+        "subject": subject,
+        "body": body,
+        "eventId": event_id,
+        "userName": user_name,
+        "liveTrackUrl": live_track_url,
+        "location": location_data,
+        "isDemo": is_demo,
+    }
+
+    try:
+        # Note: follow_redirects=True is required because Google Apps Script Web Apps return a 302 redirect
+        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+            resp = client.post(url, json=payload, headers={"Content-Type": "application/json"})
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    res_status = str(data.get("status", "")).lower()
+                    if res_status in ("success", "ok", "delivered", "sent"):
+                        return {
+                            "status": "DELIVERED_VIA_APPS_SCRIPT",
+                            "recipient": recipient_email,
+                            "gatewayStatus": data.get("status"),
+                            "messageId": data.get("messageId") or data.get("id"),
+                        }
+                    elif res_status in ("accepted", "queued"):
+                        return {
+                            "status": "ACCEPTED_BY_GATEWAY",
+                            "recipient": recipient_email,
+                            "gatewayStatus": data.get("status"),
+                            "note": data.get("message", "Accepted by Apps Script gateway for delivery"),
+                        }
+                    else:
+                        err_msg = data.get("error") or data.get("message") or f"Gateway returned status: {res_status}"
+                        return {"status": "GATEWAY_ERROR", "recipient": recipient_email, "error": err_msg}
+                except json.JSONDecodeError:
+                    if "success" in resp.text.lower() or "ok" in resp.text.lower():
+                        return {"status": "DELIVERED_VIA_APPS_SCRIPT", "recipient": recipient_email}
+                    return {"status": "GATEWAY_MALFORMED_RESPONSE", "recipient": recipient_email, "error": resp.text[:200]}
+            elif resp.status_code in (401, 403):
+                return {"status": "GATEWAY_UNAUTHORIZED", "recipient": recipient_email, "error": f"Apps Script authentication rejected (HTTP {resp.status_code})"}
+            else:
+                return {"status": "GATEWAY_HTTP_ERROR", "recipient": recipient_email, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+    except httpx.TimeoutException:
+        logger.warning("Google Apps Script email gateway timeout for %s", recipient_email)
+        return {"status": "GATEWAY_TIMEOUT", "recipient": recipient_email, "error": "Google Apps Script request timed out after 15s"}
+    except Exception as exc:
+        logger.error("Google Apps Script email dispatch failed for %s: %s", recipient_email, exc)
+        return {"status": "GATEWAY_FAILED", "recipient": recipient_email, "error": str(exc)}
+
+
+def send_sos_alert_email(
+    recipient: dict[str, Any],
+    event: dict[str, Any],
+    live_track_url: str,
+    user_name: str = "Raksha360 Citizen",
+) -> dict[str, Any]:
+    """
+    Sends or simulates an SOS alert email to an authorized, verified emergency contact.
+    Enforces truthful statuses: ACCEPTED_DEMO_SANDBOX, DELIVERED_VIA_APPS_SCRIPT, DELIVERED_TO_SMTP, PROVIDER_NOT_CONFIGURED, FAILED.
+    """
+    email_mode = os.getenv("SOS_EMAIL_MODE", "DEMO").strip().upper()
+    recipient_email = str(recipient["email"]).strip().lower()
+    event_id = str(event["event_id"])
+    lat = event.get("latitude")
+    lon = event.get("longitude")
+    accuracy = event.get("accuracy_meters")
+    reported_at = event.get("reported_at") or utc_ms()
+    event_time_utc = datetime.fromtimestamp(reported_at / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    can_share_loc = bool(recipient.get("can_share_location", 1))
+    fallback = is_nagpur_fallback(lat, lon)
+
+    if can_share_loc and lat is not None and lon is not None:
+        if fallback:
+            location_label = "FALLBACK COORDINATES (Sadar Nagpur) · Actual GPS fix was not acquired"
+            gmaps_link = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+            osm_link = f"https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=16/{lat}/{lon}"
+            location_block = (
+                f"Location Note: {location_label}\n"
+                f"Fallback Coordinates: {lat:.6f}, {lon:.6f}\n"
+                f"Google Maps Link: {gmaps_link}\n"
+                f"OpenStreetMap Link: {osm_link}\n"
+                f"Live Tracking Link: {live_track_url}\n"
+            )
+        else:
+            gmaps_link = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+            osm_link = f"https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=17/{lat}/{lon}"
+            acc_str = f" (~{accuracy:.0f}m accuracy)" if accuracy else ""
+            location_block = (
+                f"Current Coordinates: {lat:.6f}, {lon:.6f}{acc_str}\n"
+                f"Google Maps Link: {gmaps_link}\n"
+                f"OpenStreetMap Link: {osm_link}\n"
+                f"Secure Live Tracking Link: {live_track_url}\n"
+                f"Note: This live tracking link will expire in 2 hours or when resolved.\n"
+            )
+    else:
+        location_block = "Location sharing was not consented by the user or coordinates are unavailable.\n"
+
+    subject_prefix = "[DEMO SANDBOX] " if email_mode == "DEMO" else ""
+    subject = f"{subject_prefix}Raksha360 SOS ALERT: Emergency triggered by {user_name}"
+    body = (
+        f"EMERGENCY ALERT FROM RAKSHA360\n"
+        f"----------------------------------------\n"
+        f"An emergency SOS alert has been triggered by {user_name}.\n\n"
+        f"Event Time: {event_time_utc}\n"
+        f"Incident Reference: {event_id}\n\n"
+        f"{location_block}\n"
+        f"IMMEDIATE ACTION:\n"
+        f"If you believe there is immediate danger in India, dial 112 for official emergency dispatch.\n\n"
+        f"This is an automated safety alert from Raksha360.\n"
+    )
+
+    loc_meta = {
+        "latitude": lat,
+        "longitude": lon,
+        "accuracy": accuracy,
+        "isFallback": fallback,
+        "googleMapsUrl": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}" if lat and lon else None,
+    } if can_share_loc else None
+
+    if email_mode == "DEMO":
+        demo_recipient = os.getenv("DEMO_EMAIL_RECIPIENT", "").strip()
+        if demo_recipient:
+            if _apps_script_is_configured():
+                res = send_email_via_apps_script(
+                    demo_recipient,
+                    "Demo Tester",
+                    subject,
+                    body,
+                    event_id,
+                    user_name,
+                    live_track_url if can_share_loc else None,
+                    loc_meta,
+                    is_demo=True,
+                )
+                return {"status": "ACCEPTED_DEMO_SANDBOX", "recipient": demo_recipient, "simulatedFor": recipient_email, "gatewayResult": res}
+            elif _smtp_is_configured():
+                try:
+                    _send_raw_smtp(demo_recipient, subject, body)
+                    return {"status": "ACCEPTED_DEMO_SANDBOX", "recipient": demo_recipient, "simulatedFor": recipient_email}
+                except Exception as e:
+                    logger.warning("Failed to send demo sandbox email: %s", e)
+        return {"status": "ACCEPTED_DEMO_SANDBOX", "recipient": recipient_email, "note": "Simulated in sandbox"}
+
+    # LIVE Mode:
+    if _apps_script_is_configured():
+        return send_email_via_apps_script(
+            recipient_email=recipient_email,
+            recipient_name=recipient.get("name") or "Emergency Contact",
+            subject=subject,
+            body=body,
+            event_id=event_id,
+            user_name=user_name,
+            live_track_url=live_track_url if can_share_loc else None,
+            location_data=loc_meta,
+            is_demo=False,
+        )
+
+    if _smtp_is_configured():
+        try:
+            _send_raw_smtp(recipient_email, subject, body)
+            return {"status": "DELIVERED_TO_SMTP", "recipient": recipient_email}
+        except Exception as exc:
+            logger.error("Failed to send live SOS email to %s: %s", recipient_email, exc)
+            return {"status": "FAILED", "recipient": recipient_email, "error": str(exc)}
+
+    return {
+        "status": "PROVIDER_NOT_CONFIGURED",
+        "recipient": recipient_email,
+        "error": "Neither Google Apps Script (GOOGLE_APPS_SCRIPT_URL) nor SMTP is configured in backend",
+    }
+
+
+def send_offline_location_email(contact: dict[str, Any], device: dict[str, Any], incident_id: str) -> None:
+    """Send a consented last-known-location notice. This is not a live-location message."""
+    email_mode = os.getenv("SOS_EMAIL_MODE", "DEMO").strip().upper()
     latitude = device.get("last_latitude")
     longitude = device.get("last_longitude")
     if latitude is not None and longitude is not None:
-        location_link = f"https://www.openstreetmap.org/?mlat={latitude}&mlon={longitude}#map=17/{latitude}/{longitude}"
-        location_lines = (
-            f"Coordinates: {latitude:.6f}, {longitude:.6f}\n"
-            f"OpenStreetMap link: {location_link}\n"
-        )
+        if is_nagpur_fallback(latitude, longitude):
+            location_lines = "Coordinates: FALLBACK COORDINATES (Sadar Nagpur) · Actual device GPS fix was not acquired.\n"
+        else:
+            location_link = f"https://www.openstreetmap.org/?mlat={latitude}&mlon={longitude}#map=17/{latitude}/{longitude}"
+            gmaps_link = f"https://www.google.com/maps/search/?api=1&query={latitude},{longitude}"
+            location_lines = (
+                f"Coordinates: {latitude:.6f}, {longitude:.6f}\n"
+                f"Google Maps link: {gmaps_link}\n"
+                f"OpenStreetMap link: {location_link}\n"
+            )
     else:
         location_lines = "Coordinates are unavailable; no real device location was recorded by the server.\n"
     last_seen = datetime.fromtimestamp(int(device["last_seen_at"]) / 1000, tz=timezone.utc).isoformat()
     location_at = device.get("last_location_at")
     location_time = datetime.fromtimestamp(int(location_at) / 1000, tz=timezone.utc).isoformat() if location_at else "Unavailable"
     offline_since = datetime.fromtimestamp(int(device.get("offline_detected_at") or utc_ms()) / 1000, tz=timezone.utc).isoformat()
-    message = EmailMessage()
-    message["Subject"] = "Raksha360 alert: phone stopped checking in"
-    message["From"] = sender
-    message["To"] = str(contact["email"])
-    message.set_content(
+
+    subject_prefix = "[DEMO SANDBOX] " if email_mode == "DEMO" else ""
+    subject = f"{subject_prefix}Raksha360 alert: phone stopped checking in"
+    target_to = str(contact["email"])
+    if email_mode == "DEMO":
+        demo_recipient = os.getenv("DEMO_EMAIL_RECIPIENT", "").strip()
+        if demo_recipient:
+            target_to = demo_recipient
+        else:
+            logger.info("Demo sandbox missed-heartbeat alert simulated for %s", contact.get("email"))
+            return
+
+    body_text = (
         f"Hello {contact.get('name') or 'trusted contact'},\n\n"
         "Raksha360 has not received a device heartbeat for the configured timeout. "
         "The phone may be powered off, out of coverage, disconnected, or the app/service may have stopped. "
@@ -1033,14 +1351,26 @@ def send_offline_location_email(contact: dict[str, Any], device: dict[str, Any],
         f"{location_lines}\n"
         "IMPORTANT: This is a LAST KNOWN LOCATION, not a live GPS position. A fully powered-off phone cannot transmit new location updates.\n\n"
         f"Raksha360 local control-room reference: {incident_id}\n"
-        "If you believe there is immediate danger, contact local emergency services directly.\n"
+        "If you believe there is immediate danger in India, contact local emergency services directly at 112.\n"
     )
-    with smtplib.SMTP(host, port, timeout=15) as server:
-        if use_tls:
-            server.starttls()
-        if username:
-            server.login(username, password)
-        server.send_message(message)
+
+    if _apps_script_is_configured():
+        res = send_email_via_apps_script(
+            recipient_email=target_to,
+            recipient_name=contact.get("name") or "Emergency Contact",
+            subject=subject,
+            body=body_text,
+            event_id=incident_id,
+            is_demo=(email_mode == "DEMO"),
+        )
+        if res.get("status") not in ("DELIVERED_VIA_APPS_SCRIPT", "ACCEPTED_BY_GATEWAY", "ACCEPTED_DEMO_SANDBOX"):
+            raise RuntimeError(res.get("error", "Apps Script offline email failed"))
+        return
+
+    if not _smtp_is_configured():
+        raise RuntimeError("EMAIL_PROVIDER_NOT_CONFIGURED")
+
+    _send_raw_smtp(target_to, subject, body_text)
 
 
 def _device_status_payload(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -1367,28 +1697,696 @@ async def receive_location_update(payload: DeviceLocationUpdate) -> dict[str, An
     return {"recorded": True, "liveSessionUrl": f"/control-room/map?incident={payload.eventId}", "storedAt": current}
 
 
+LIVE_TRACK_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raksha360 — Live Emergency Location</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        :root {
+            --bg-dark: #0B132B;
+            --card-bg: #1C2541;
+            --accent-blue: #3B82F6;
+            --danger-red: #EF4444;
+            --safe-green: #10B981;
+            --warning-amber: #F59E0B;
+            --text-main: #F8FAFC;
+            --text-muted: #94A3B8;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        body { background-color: var(--bg-dark); color: var(--text-main); min-height: 100vh; display: flex; flex-direction: column; }
+        header { background: rgba(11, 19, 43, 0.95); backdrop-filter: blur(10px); padding: 16px 24px; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; justify-content: space-between; align-items: center; }
+        .logo-box { display: flex; align-items: center; gap: 12px; }
+        .logo-shield { width: 36px; height: 36px; background: linear-gradient(135deg, #1D4ED8, #3B82F6); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 18px; color: white; }
+        .app-title { font-size: 18px; font-weight: 700; letter-spacing: 0.5px; }
+        .app-subtitle { font-size: 12px; color: var(--text-muted); }
+        .btn-112 { background-color: var(--danger-red); color: white; text-decoration: none; font-weight: 700; font-size: 14px; padding: 8px 16px; border-radius: 9999px; display: flex; align-items: center; gap: 6px; box-shadow: 0 4px 14px rgba(239, 68, 68, 0.4); transition: transform 0.2s; }
+        .btn-112:hover { transform: scale(1.05); }
+        main { flex: 1; display: flex; flex-direction: column; padding: 16px; max-width: 1000px; margin: 0 auto; width: 100%; gap: 16px; }
+        .status-card { background: var(--card-bg); border-radius: 16px; padding: 16px 20px; border: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+        .status-pill { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; padding: 6px 14px; border-radius: 9999px; }
+        .status-live { background: rgba(16, 185, 129, 0.15); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.3); }
+        .status-stale { background: rgba(245, 158, 11, 0.15); color: #FBBF24; border: 1px solid rgba(245, 158, 11, 0.3); }
+        .pulse-dot { width: 8px; height: 8px; border-radius: 50%; background-color: currentColor; animation: pulse 1.8s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.8); } }
+        .alert-box { background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 12px; padding: 12px 16px; font-size: 13px; color: #FCD34D; display: flex; gap: 10px; align-items: center; }
+        #map { height: 480px; width: 100%; border-radius: 16px; border: 1px solid rgba(255,255,255,0.1); z-index: 1; }
+        .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+        .info-cell { background: var(--card-bg); border-radius: 12px; padding: 14px; border: 1px solid rgba(255,255,255,0.06); }
+        .info-label { font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 600; margin-bottom: 4px; }
+        .info-val { font-size: 14px; font-weight: 600; color: white; }
+        footer { text-align: center; padding: 16px; font-size: 12px; color: var(--text-muted); }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo-box">
+            <div class="logo-shield">🛡️</div>
+            <div>
+                <div class="app-title">Raksha360 Live Alert</div>
+                <div class="app-subtitle">Emergency Contact Real-Time Tracking</div>
+            </div>
+        </div>
+        <a href="tel:112" class="btn-112">📞 Call 112</a>
+    </header>
+    <main>
+        <div class="status-card">
+            <div>
+                <div style="font-size: 16px; font-weight: 700;" id="event-title">SOS Emergency Event</div>
+                <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;" id="event-id-display">Ref: {{EVENT_ID}}</div>
+            </div>
+            <div id="status-badge" class="status-pill {{STATUS_CLASS}}">
+                <span class="pulse-dot"></span>
+                <span id="status-text">{{STATUS_TEXT}}</span>
+            </div>
+        </div>
+
+        {{FALLBACK_ALERT}}
+
+        <div id="map"></div>
+
+        <div class="info-grid">
+            <div class="info-cell">
+                <div class="info-label">Coordinates</div>
+                <div class="info-val" id="coords-display">{{COORDS_TEXT}}</div>
+            </div>
+            <div class="info-cell">
+                <div class="info-label">Accuracy</div>
+                <div class="info-val" id="accuracy-display">{{ACCURACY_TEXT}}</div>
+            </div>
+            <div class="info-cell">
+                <div class="info-label">Last Position Received</div>
+                <div class="info-val" id="time-display">{{TIME_TEXT}}</div>
+            </div>
+            <div class="info-cell">
+                <div class="info-label">Sharing Session</div>
+                <div class="info-val" id="session-display">Valid for 2 hours · Time-limited</div>
+            </div>
+        </div>
+    </main>
+    <footer>
+        Raksha360 Authorized Emergency Sharing · Link expires automatically · Not public
+    </footer>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const token = "{{TOKEN}}";
+        let lat = {{LAT}};
+        let lon = {{LON}};
+        let acc = {{ACC}};
+        
+        const map = L.map('map').setView([lat, lon], 16);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        const marker = L.marker([lat, lon]).addTo(map).bindPopup("<b>Emergency Location</b>").openPopup();
+        let circle = L.circle([lat, lon], { radius: acc || 20, color: '#EF4444', fillColor: '#EF4444', fillOpacity: 0.15 }).addTo(map);
+
+        async function refreshStatus() {
+            try {
+                const res = await fetch('/api/v1/live-location/status?token=' + encodeURIComponent(token));
+                if (!res.ok) return;
+                const data = await res.json();
+                if (!data.valid) {
+                    document.getElementById('status-text').innerText = data.message || "Session ended";
+                    return;
+                }
+                if (data.latitude && data.longitude) {
+                    marker.setLatLng([data.latitude, data.longitude]);
+                    circle.setLatLng([data.latitude, data.longitude]);
+                    circle.setRadius(data.accuracyMeters || 20);
+                    document.getElementById('coords-display').innerText = data.latitude.toFixed(6) + ', ' + data.longitude.toFixed(6);
+                    document.getElementById('accuracy-display').innerText = data.accuracyMeters ? '±' + Math.round(data.accuracyMeters) + 'm' : 'Standard GPS';
+                    document.getElementById('status-text').innerText = data.isLive ? 'Live Tracking Active (' + data.ageSeconds + 's ago)' : 'Last Known Location (' + Math.round(data.ageSeconds / 60) + 'm ago)';
+                    const badge = document.getElementById('status-badge');
+                    badge.className = 'status-pill ' + (data.isLive ? 'status-live' : 'status-stale');
+                }
+            } catch (e) {
+                console.warn("Poll failed", e);
+            }
+        }
+        setInterval(refreshStatus, 10000);
+    </script>
+</body>
+</html>
+"""
+
+
+@app.get("/live-track", response_class=HTMLResponse)
+def get_live_tracking_page(token: str = Query(..., min_length=10)) -> HTMLResponse:
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    current = utc_ms()
+    with db() as conn:
+        share = conn.execute("SELECT * FROM live_location_shares WHERE token_hash = ?", (token_hash,)).fetchone()
+        if not share:
+            return HTMLResponse(
+                content="<h2 style='color:#EF4444;font-family:sans-serif;text-align:center;margin-top:40px;'>Invalid or Expired Live Tracking Link</h2><p style='text-align:center;'>This link was not found or has expired.</p>",
+                status_code=404
+            )
+        if share["is_revoked"] == 1:
+            return HTMLResponse(
+                content="<h2 style='color:#F59E0B;font-family:sans-serif;text-align:center;margin-top:40px;'>Live Location Sharing Revoked</h2><p style='text-align:center;'>The user has revoked access to live location sharing for this emergency event.</p>",
+                status_code=403
+            )
+        if current > share["expires_at"]:
+            return HTMLResponse(
+                content="<h2 style='color:#94A3B8;font-family:sans-serif;text-align:center;margin-top:40px;'>Live Location Link Expired</h2><p style='text-align:center;'>This temporary live location session has expired (maximum 2-hour duration).</p>",
+                status_code=410
+            )
+
+        event_id = share["event_id"]
+        latest_loc = conn.execute(
+            "SELECT * FROM location_updates WHERE event_id = ? ORDER BY timestamp DESC LIMIT 1",
+            (event_id,)
+        ).fetchone()
+        incident = conn.execute("SELECT * FROM incidents WHERE event_id = ?", (event_id,)).fetchone()
+
+    lat = latest_loc["latitude"] if latest_loc else (incident["latitude"] if incident else 21.1458)
+    lon = latest_loc["longitude"] if latest_loc else (incident["longitude"] if incident else 79.0882)
+    acc = latest_loc["accuracy_meters"] if latest_loc else (incident["accuracy_meters"] if incident else 25.0)
+    loc_time = latest_loc["timestamp"] if latest_loc else (incident["reported_at"] if incident else current)
+
+    age_sec = max(0, int((current - loc_time) / 1000))
+    is_live = age_sec < 180
+    status_class = "status-live" if is_live else "status-stale"
+    status_text = f"Live Tracking Active ({age_sec}s ago)" if is_live else f"Last Known Location ({age_sec // 60}m ago)"
+    fallback = is_nagpur_fallback(lat, lon)
+    fallback_html = (
+        "<div class='alert-box'>⚠️ <b>Fallback Location Note:</b> Showing default Sadar Nagpur fallback coordinates. The device did not record a valid GPS fix.</div>"
+        if fallback else ""
+    )
+
+    time_formatted = datetime.fromtimestamp(loc_time / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    html = LIVE_TRACK_HTML_TEMPLATE
+    html = html.replace("{{EVENT_ID}}", event_id)
+    html = html.replace("{{STATUS_CLASS}}", status_class)
+    html = html.replace("{{STATUS_TEXT}}", status_text)
+    html = html.replace("{{FALLBACK_ALERT}}", fallback_html)
+    html = html.replace("{{COORDS_TEXT}}", f"{lat:.6f}, {lon:.6f}" if lat is not None else "Unavailable")
+    html = html.replace("{{ACCURACY_TEXT}}", f"±{round(acc)}m" if acc else "Standard GPS")
+    html = html.replace("{{TIME_TEXT}}", time_formatted)
+    html = html.replace("{{TOKEN}}", token)
+    html = html.replace("{{LAT}}", str(lat if lat is not None else 21.1458))
+    html = html.replace("{{LON}}", str(lon if lon is not None else 79.0882))
+    html = html.replace("{{ACC}}", str(acc if acc is not None else 25.0))
+    return HTMLResponse(content=html, status_code=200)
+
+
+@app.get("/api/v1/live-location/status")
+def get_live_location_status(token: str = Query(..., min_length=10)) -> dict[str, Any]:
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    current = utc_ms()
+    with db() as conn:
+        share = conn.execute("SELECT * FROM live_location_shares WHERE token_hash = ?", (token_hash,)).fetchone()
+        if not share:
+            raise HTTPException(status_code=404, detail="Live location share link not found.")
+        if share["is_revoked"] == 1:
+            return {"valid": False, "isRevoked": True, "isExpired": False, "message": "Location sharing was revoked by the user."}
+        if current > share["expires_at"]:
+            return {"valid": False, "isRevoked": False, "isExpired": True, "message": "Live location sharing link has expired."}
+
+        event_id = share["event_id"]
+        latest_loc = conn.execute(
+            "SELECT * FROM location_updates WHERE event_id = ? ORDER BY timestamp DESC LIMIT 1",
+            (event_id,)
+        ).fetchone()
+        incident = conn.execute("SELECT * FROM incidents WHERE event_id = ?", (event_id,)).fetchone()
+
+    lat = latest_loc["latitude"] if latest_loc else (incident["latitude"] if incident else None)
+    lon = latest_loc["longitude"] if latest_loc else (incident["longitude"] if incident else None)
+    acc = latest_loc["accuracy_meters"] if latest_loc else (incident["accuracy_meters"] if incident else None)
+    loc_time = latest_loc["timestamp"] if latest_loc else (incident["reported_at"] if incident else current)
+    age_seconds = max(0, int((current - loc_time) / 1000))
+    is_live = age_seconds < 180
+
+    return {
+        "valid": True,
+        "isRevoked": False,
+        "isExpired": False,
+        "eventId": event_id,
+        "latitude": lat,
+        "longitude": lon,
+        "accuracyMeters": acc,
+        "lastLocationAt": loc_time,
+        "ageSeconds": age_seconds,
+        "isLive": is_live,
+        "isFallbackNagpur": is_nagpur_fallback(lat, lon),
+        "statusText": f"Updated {age_seconds}s ago" if is_live else f"Last known ({age_seconds // 60}m ago)",
+        "expiresAt": share["expires_at"],
+    }
+
+
+@app.post("/api/v1/emergency-events/{event_id}/revoke-location-share", dependencies=[Depends(require_device)])
+def revoke_live_location_share(event_id: str, actor: str = Depends(require_device)) -> dict[str, Any]:
+    with db() as conn:
+        conn.execute("UPDATE live_location_shares SET is_revoked = 1 WHERE event_id = ?", (event_id,))
+    create_audit(actor, "LIVE_LOCATION_REVOKED", event_id, "User revoked live location sharing for emergency event.", False)
+    return {"revoked": True, "eventId": event_id, "revokedAt": utc_ms()}
+
+
+# ---------- Emergency Contacts Management (Up to 2 Contacts) ----------
+@app.get("/api/v1/emergency-contacts", dependencies=[Depends(require_device)])
+def get_emergency_contacts(actor: str = Depends(require_device)) -> list[dict[str, Any]]:
+    uid = actor[5:] if actor.startswith("USER:") else ""
+    with db() as conn:
+        rows = conn.execute(
+            """SELECT * FROM emergency_contacts
+               WHERE (user_id = ? OR device_id = 'ANDROID_APP') AND is_active = 1
+               ORDER BY updated_at DESC LIMIT 2""",
+            (uid,)
+        ).fetchall()
+    return [
+        {
+            "email": r["email"],
+            "name": r["name"],
+            "relationship": r["relationship"],
+            "phone": r["phone"],
+            "isVerified": bool(r["is_verified"]),
+            "notifyByEmail": bool(r["notify_by_email"]),
+            "canShareLocation": bool(r["can_share_location"]),
+            "updatedAt": r["updated_at"],
+        }
+        for r in rows
+    ]
+
+
+@app.post("/api/v1/emergency-contacts", dependencies=[Depends(require_device)])
+def create_or_update_emergency_contact(
+    payload: EmergencyContactInput,
+    actor: str = Depends(require_device)
+) -> dict[str, Any]:
+    uid = actor[5:] if actor.startswith("USER:") else ""
+    norm_email = payload.email.strip().lower()
+    current = utc_ms()
+    email_mode = os.getenv("SOS_EMAIL_MODE", "DEMO").strip().upper()
+
+    with db() as conn:
+        existing_rows = conn.execute(
+            """SELECT email FROM emergency_contacts
+               WHERE (user_id = ? OR device_id = 'ANDROID_APP') AND is_active = 1""",
+            (uid,)
+        ).fetchall()
+        existing_emails = {r["email"].lower() for r in existing_rows}
+
+        if len(existing_emails) >= 2 and norm_email not in existing_emails:
+            raise HTTPException(
+                status_code=400,
+                detail="Maximum of 2 emergency contacts allowed. Remove an existing contact before adding a new one."
+            )
+
+        existing_contact = conn.execute("SELECT * FROM emergency_contacts WHERE email = ?", (norm_email,)).fetchone()
+        already_verified = bool(existing_contact["is_verified"]) if existing_contact else False
+        verification_code = "" if already_verified else f"{secrets.randbelow(900000) + 100000}"
+
+        conn.execute(
+            """INSERT INTO emergency_contacts (
+                   device_id, email, name, relationship, phone, is_verified, verification_code,
+                   can_share_location, user_id, notify_by_email, is_active, updated_at
+               ) VALUES ('ANDROID_APP', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+               ON CONFLICT(device_id, email) DO UPDATE SET
+                   name = excluded.name,
+                   relationship = excluded.relationship,
+                   phone = excluded.phone,
+                   can_share_location = excluded.can_share_location,
+                   user_id = excluded.user_id,
+                   notify_by_email = excluded.notify_by_email,
+                   is_active = 1,
+                   updated_at = excluded.updated_at""",
+            (norm_email, payload.name.strip(), payload.relationship.strip(), payload.phone.strip(),
+             1 if already_verified else 0, verification_code, int(payload.canShareLocation), uid,
+             int(payload.notifyByEmail), current)
+        )
+
+    if not already_verified and email_mode == "LIVE":
+        subj = "Raksha360 Emergency Contact Verification Code"
+        msg = (
+            f"Hello {payload.name},\n\n"
+            "You have been listed as an emergency contact in the Raksha360 Women & Child Safety App.\n\n"
+            f"Your 6-digit verification code is: {verification_code}\n\n"
+            "Enter this code in the app to verify your contact address."
+        )
+        if _apps_script_is_configured():
+            send_email_via_apps_script(norm_email, payload.name, subj, msg, event_id="VERIFY-" + verification_code, is_demo=False)
+        elif _smtp_is_configured():
+            try:
+                _send_raw_smtp(norm_email, subj, msg)
+            except Exception as exc:
+                logger.warning("Failed to send verification email: %s", exc)
+
+    return {
+        "accepted": True,
+        "email": norm_email,
+        "name": payload.name,
+        "isVerified": already_verified,
+        "demoVerificationCode": verification_code if (not already_verified and email_mode == "DEMO") else None,
+        "mode": email_mode,
+        "message": "Emergency contact saved successfully." if already_verified else "Contact saved. Please verify the email address.",
+    }
+
+
+@app.post("/api/v1/emergency-contacts/{email}/send-verification", dependencies=[Depends(require_device)])
+def send_contact_verification(email: str, actor: str = Depends(require_device)) -> dict[str, Any]:
+    norm_email = email.strip().lower()
+    email_mode = os.getenv("SOS_EMAIL_MODE", "DEMO").strip().upper()
+    code = f"{secrets.randbelow(900000) + 100000}"
+    with db() as conn:
+        contact = conn.execute("SELECT * FROM emergency_contacts WHERE email = ?", (norm_email,)).fetchone()
+        if not contact:
+            raise HTTPException(status_code=404, detail="Contact not found.")
+        conn.execute("UPDATE emergency_contacts SET verification_code = ? WHERE email = ?", (code, norm_email))
+
+    if email_mode == "LIVE":
+        subj = "Raksha360 Emergency Contact Verification Code"
+        msg = f"Hello {contact['name']},\n\nYour verification code is: {code}\n\nUse this code in Raksha360 to verify your contact address."
+        if _apps_script_is_configured():
+            send_email_via_apps_script(norm_email, contact["name"], subj, msg, event_id="VERIFY-" + code, is_demo=False)
+        elif _smtp_is_configured():
+            try:
+                _send_raw_smtp(norm_email, subj, msg)
+            except Exception as exc:
+                logger.warning("Failed to send verification code email: %s", exc)
+
+    return {
+        "sent": True,
+        "email": norm_email,
+        "mode": email_mode,
+        "demoVerificationCode": code if email_mode == "DEMO" else None,
+        "message": f"Verification code generated ({email_mode} mode)."
+    }
+
+
+@app.post("/api/v1/emergency-contacts/{email}/verify", dependencies=[Depends(require_device)])
+def verify_emergency_contact(
+    email: str,
+    payload: VerifyCodeInput,
+    actor: str = Depends(require_device)
+) -> dict[str, Any]:
+    norm_email = email.strip().lower()
+    with db() as conn:
+        contact = conn.execute("SELECT * FROM emergency_contacts WHERE email = ?", (norm_email,)).fetchone()
+        if not contact:
+            raise HTTPException(status_code=404, detail="Contact not found.")
+        expected_code = contact["verification_code"]
+        if not expected_code or payload.code.strip() != expected_code.strip():
+            raise HTTPException(status_code=400, detail="Invalid verification code.")
+        conn.execute(
+            "UPDATE emergency_contacts SET is_verified = 1, verification_code = '', updated_at = ? WHERE email = ?",
+            (utc_ms(), norm_email)
+        )
+    return {"verified": True, "email": norm_email, "message": "Email address verified successfully."}
+
+
+@app.delete("/api/v1/emergency-contacts/{email}", dependencies=[Depends(require_device)])
+def delete_emergency_contact(email: str, actor: str = Depends(require_device)) -> dict[str, Any]:
+    norm_email = email.strip().lower()
+    with db() as conn:
+        conn.execute("DELETE FROM emergency_contacts WHERE email = ?", (norm_email,))
+    return {"deleted": True, "email": norm_email}
+
+
+@app.patch("/api/v1/emergency-contacts/{email}/preferences", dependencies=[Depends(require_device)])
+def update_contact_preferences(
+    email: str,
+    payload: ContactPreferencePatch,
+    actor: str = Depends(require_device)
+) -> dict[str, Any]:
+    norm_email = email.strip().lower()
+    with db() as conn:
+        contact = conn.execute("SELECT * FROM emergency_contacts WHERE email = ?", (norm_email,)).fetchone()
+        if not contact:
+            raise HTTPException(status_code=404, detail="Contact not found.")
+        notify = int(payload.notifyByEmail) if payload.notifyByEmail is not None else contact["notify_by_email"]
+        share_loc = int(payload.canShareLocation) if payload.canShareLocation is not None else contact["can_share_location"]
+        conn.execute(
+            "UPDATE emergency_contacts SET notify_by_email = ?, can_share_location = ?, updated_at = ? WHERE email = ?",
+            (notify, share_loc, utc_ms(), norm_email)
+        )
+        updated = conn.execute("SELECT * FROM emergency_contacts WHERE email = ?", (norm_email,)).fetchone()
+    return {
+        "email": norm_email,
+        "notifyByEmail": bool(updated["notify_by_email"]),
+        "canShareLocation": bool(updated["can_share_location"]),
+        "isVerified": bool(updated["is_verified"]),
+    }
+
+
 @app.post("/api/v1/trusted-contact-alerts", dependencies=[Depends(require_device)])
-async def receive_trusted_contact_alert(payload: TrustedContactAlert) -> dict[str, Any]:
+async def receive_trusted_contact_alert(
+    payload: TrustedContactAlert,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
     alert_id = str(uuid.uuid4())
-    details = payload.model_dump()
-    # Store a pending delivery request, not a success claim. Providers are intentionally not configured by default.
-    delivery_state = "PENDING_PROVIDER_CONFIGURATION"
+    current = utc_ms()
+    email_mode = os.getenv("SOS_EMAIL_MODE", "DEMO").strip().upper()
+    identity = resolve_session_or_device_token(authorization) or "ANDROID_APP"
+    user_id = identity[5:] if identity.startswith("USER:") else ""
+
+    with db() as conn:
+        incident_row = conn.execute("SELECT * FROM incidents WHERE event_id = ?", (payload.eventId,)).fetchone()
+        if not incident_row:
+            conn.execute(
+                """INSERT INTO incidents (event_id, trigger_type, reported_at, status, severity,
+                   latitude, longitude, accuracy_meters, location_description, device_session_id, is_demo, source, updated_at)
+                   VALUES (?, ?, ?, 'New', 'Medium', ?, ?, ?, ?, 'ANDROID_APP', 0, 'ANDROID_APP', ?)
+                   ON CONFLICT(event_id) DO NOTHING""",
+                (payload.eventId, payload.triggerType, payload.timestamp,
+                 payload.latitude or (payload.lastKnownLocation or {}).get("latitude"),
+                 payload.longitude or (payload.lastKnownLocation or {}).get("longitude"),
+                 payload.accuracyMeters, payload.address, current)
+            )
+            incident_row = conn.execute("SELECT * FROM incidents WHERE event_id = ?", (payload.eventId,)).fetchone()
+
+    incident = dict(incident_row) if incident_row else {
+        "event_id": payload.eventId,
+        "latitude": payload.latitude or (payload.lastKnownLocation or {}).get("latitude"),
+        "longitude": payload.longitude or (payload.lastKnownLocation or {}).get("longitude"),
+        "accuracy_meters": payload.accuracyMeters,
+        "reported_at": payload.timestamp,
+        "is_demo": False,
+    }
+
+    raw_share_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_share_token.encode("utf-8")).hexdigest()
+    expires_at = current + (2 * 3600 * 1000)
+
     with db() as conn:
         conn.execute(
-            "INSERT INTO trusted_contact_alerts (alert_id, event_id, created_at, contact_count, delivery_status, channels_json, details_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (alert_id, payload.eventId, utc_ms(), len(payload.contacts), delivery_state, "[]", json.dumps(details)),
+            """INSERT INTO live_location_shares (token_hash, event_id, user_id, device_id, expires_at, is_revoked, created_at)
+               VALUES (?, ?, ?, ?, ?, 0, ?)
+               ON CONFLICT(token_hash) DO NOTHING""",
+            (token_hash, payload.eventId, user_id, "ANDROID_APP", expires_at, current)
         )
-    create_audit("ANDROID_APP", "TRUSTED_CONTACT_ALERT_QUEUED", payload.eventId,
-                 f"Contact notification request queued for provider configuration; contacts={len(payload.contacts)}.", False)
-    await manager.broadcast("CONTACT_ALERT_QUEUED", {"alertId": alert_id, "eventId": payload.eventId, "status": delivery_state, "contactCount": len(payload.contacts)})
+
+    base_url = os.getenv("RAKSHA360_PUBLIC_URL", "https://raksha360-api.onrender.com").rstrip("/")
+    live_track_url = f"{base_url}/live-track?token={raw_share_token}"
+
+    candidate_contacts: list[dict[str, Any]] = []
+    if payload.contacts:
+        candidate_contacts = list(payload.contacts)
+    else:
+        with db() as conn:
+            saved = conn.execute(
+                "SELECT * FROM emergency_contacts WHERE (user_id = ? OR device_id = 'ANDROID_APP') AND is_active = 1 ORDER BY updated_at DESC LIMIT 2",
+                (user_id,)
+            ).fetchall()
+            candidate_contacts = [dict(c) for c in saved]
+
+    target_contacts = candidate_contacts[:2]
+
+    dispatched_results: list[dict[str, Any]] = []
+    sent_count = 0
+    failed_count = 0
+    channels_dispatched: list[str] = []
+
+    for contact in target_contacts:
+        contact_email = (contact.get("email") or "").strip().lower()
+        if not contact_email or "@" not in contact_email:
+            continue
+
+        with db() as conn:
+            db_contact = conn.execute(
+                "SELECT * FROM emergency_contacts WHERE email = ?",
+                (contact_email,)
+            ).fetchone()
+
+        is_verified = bool(db_contact["is_verified"]) if db_contact else bool(contact.get("isVerified", False))
+        notify_email = bool(db_contact["notify_by_email"]) if db_contact else bool(contact.get("notifyByEmail", True))
+        can_share_loc = bool(db_contact["can_share_location"]) if db_contact else bool(contact.get("canShareLocation", True))
+
+        if not notify_email:
+            continue
+
+        with db() as conn:
+            already_sent = conn.execute(
+                "SELECT * FROM sent_sos_emails WHERE event_id = ? AND recipient_email = ?",
+                (payload.eventId, contact_email)
+            ).fetchone()
+
+        if already_sent:
+            dispatched_results.append({
+                "email": contact_email,
+                "status": already_sent["delivery_status"],
+                "deduplicated": True,
+                "liveTrackUrl": live_track_url,
+            })
+            if already_sent["delivery_status"] in ("ACCEPTED_DEMO_SANDBOX", "DELIVERED_TO_SMTP", "DELIVERED_VIA_APPS_SCRIPT", "ACCEPTED_BY_GATEWAY"):
+                sent_count += 1
+            continue
+
+        contact_meta = {
+            "email": contact_email,
+            "name": contact.get("name") or "Emergency Contact",
+            "can_share_location": can_share_loc,
+        }
+
+        if email_mode == "LIVE" and not is_verified:
+            delivery_res = {"status": "UNVERIFIED_CONTACT", "recipient": contact_email, "error": "Contact email is not verified"}
+        else:
+            delivery_res = send_sos_alert_email(contact_meta, incident, live_track_url, user_name="Raksha360 Citizen")
+
+        status_str = delivery_res.get("status", "FAILED")
+        with db() as conn:
+            conn.execute(
+                """INSERT INTO sent_sos_emails (id, event_id, recipient_email, recipient_name, delivery_mode, delivery_status, attempted_at, sent_at, live_track_url, error_message)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(event_id, recipient_email) DO UPDATE SET
+                       delivery_status = excluded.delivery_status,
+                       sent_at = excluded.sent_at,
+                       error_message = excluded.error_message""",
+                (str(uuid.uuid4()), payload.eventId, contact_email, contact_meta["name"], email_mode, status_str,
+                 current, current if status_str in ("ACCEPTED_DEMO_SANDBOX", "DELIVERED_TO_SMTP", "DELIVERED_VIA_APPS_SCRIPT", "ACCEPTED_BY_GATEWAY") else None,
+                 live_track_url if can_share_loc else None, delivery_res.get("error"))
+            )
+
+        dispatched_results.append({
+            "email": contact_email,
+            "status": status_str,
+            "liveTrackUrl": live_track_url if can_share_loc else None,
+        })
+        if status_str in ("ACCEPTED_DEMO_SANDBOX", "DELIVERED_TO_SMTP", "DELIVERED_VIA_APPS_SCRIPT", "ACCEPTED_BY_GATEWAY"):
+            sent_count += 1
+            if "EMAIL" not in channels_dispatched:
+                channels_dispatched.append("EMAIL_SANDBOX" if email_mode == "DEMO" else "EMAIL")
+        else:
+            failed_count += 1
+
+    if not dispatched_results:
+        overall_delivery = "PENDING_PROVIDER_CONFIGURATION"
+        msg = "Request stored. No SMS, email, or push provider is configured, so no contact was told this was delivered."
+    elif sent_count > 0:
+        if email_mode == "DEMO":
+            overall_delivery = "ACCEPTED_DEMO_SANDBOX"
+        elif any(r.get("status") == "DELIVERED_VIA_APPS_SCRIPT" for r in dispatched_results):
+            overall_delivery = "DELIVERED_VIA_APPS_SCRIPT"
+        elif any(r.get("status") == "ACCEPTED_BY_GATEWAY" for r in dispatched_results):
+            overall_delivery = "ACCEPTED_BY_GATEWAY"
+        else:
+            overall_delivery = "DELIVERED_TO_SMTP"
+        msg = f"Alert processed for {sent_count} verified emergency contact(s) via {email_mode} mode."
+    else:
+        overall_delivery = dispatched_results[0]["status"] if dispatched_results else "FAILED"
+        msg = f"Email alert could not be delivered: {overall_delivery}."
+
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO trusted_contact_alerts (alert_id, event_id, created_at, contact_count, delivery_status, channels_json, details_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(alert_id) DO UPDATE SET delivery_status=excluded.delivery_status""",
+            (alert_id, payload.eventId, current, len(target_contacts), overall_delivery, json.dumps(channels_dispatched), json.dumps(payload.model_dump())),
+        )
+
+    create_audit("ANDROID_APP", "TRUSTED_CONTACT_ALERT_PROCESSED", payload.eventId,
+                 f"SOS alert processed for {len(target_contacts)} contacts; mode={email_mode}; status={overall_delivery}; sent={sent_count}.", False)
+
+    await manager.broadcast("CONTACT_ALERT_PROCESSED", {
+        "alertId": alert_id,
+        "eventId": payload.eventId,
+        "status": overall_delivery,
+        "sentCount": sent_count,
+        "contacts": dispatched_results,
+    })
+
     return {
         "eventId": payload.eventId,
-        "sentCount": 0,
-        "failedCount": len(payload.contacts),
-        "channelsDispatched": [],
-        "deliveryStatus": delivery_state,
-        "message": "Request stored. No SMS, email, or push provider is configured, so no contact was told this was delivered.",
+        "sentCount": sent_count,
+        "failedCount": len(target_contacts) - sent_count,
+        "channelsDispatched": channels_dispatched,
+        "deliveryStatus": overall_delivery,
+        "emailMode": email_mode,
+        "liveTrackingUrl": live_track_url,
+        "contactsDispatched": dispatched_results,
+        "message": msg,
     }
+
+
+# ---------- ElevenLabs Assistant Signed-URL Credentials Endpoint ----------
+@app.get("/api/v1/assistant/session", dependencies=[Depends(require_any_api_client)])
+async def get_assistant_session() -> dict[str, Any]:
+    agent_id = os.getenv("ELEVENLABS_AGENT_ID", "agent_3701m51qchkaenxsjnzr8jvrm66").strip()
+    api_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
+    if not api_key:
+        return {
+            "configured": False,
+            "agentId": agent_id,
+            "agentName": "Raksha360 AI Assistant",
+            "signedUrl": None,
+            "message": "ElevenLabs API key is not configured on the backend server. Set ELEVENLABS_API_KEY in Render environment.",
+        }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(
+                "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url",
+                params={"agent_id": agent_id},
+                headers={"xi-api-key": api_key},
+            )
+            if res.status_code == 200:
+                data = res.json()
+                return {
+                    "configured": True,
+                    "agentId": agent_id,
+                    "agentName": "Raksha360 AI Assistant",
+                    "signedUrl": data.get("signed_url"),
+                }
+            else:
+                logger.warning("ElevenLabs signed URL request failed: %s %s", res.status_code, res.text)
+                return {
+                    "configured": False,
+                    "agentId": agent_id,
+                    "agentName": "Raksha360 AI Assistant",
+                    "signedUrl": None,
+                    "error": f"ElevenLabs API returned {res.status_code}",
+                }
+    except Exception as exc:
+        logger.error("ElevenLabs signed URL exception: %s", exc)
+        return {
+            "configured": False,
+            "agentId": agent_id,
+            "agentName": "Raksha360 AI Assistant",
+            "signedUrl": None,
+            "error": "Failed to connect to ElevenLabs API",
+        }
+
+
+# ---------- Missed Heartbeat Scheduled Cron Endpoint ----------
+@app.post("/api/v1/cron/evaluate-offline")
+async def cron_evaluate_offline(
+    authorization: str | None = Header(default=None),
+    x_cron_key: str | None = Header(default=None),
+) -> dict[str, Any]:
+    expected_key = os.getenv("RAKSHA360_CRON_KEY", "").strip()
+    if expected_key:
+        if not constant_time_token_match(x_cron_key, expected_key):
+            try:
+                require_any_api_client(authorization=authorization)
+            except HTTPException:
+                raise HTTPException(status_code=401, detail="Invalid cron key or authorization.")
+    await evaluate_offline_devices_once()
+    return {"status": "completed", "evaluatedAt": utc_ms()}
 
 
 @app.post("/api/v1/police-alerts", dependencies=[Depends(require_device)])

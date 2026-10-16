@@ -1,4 +1,5 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.util.Properties
 
 plugins {
   alias(libs.plugins.android.application)
@@ -12,6 +13,18 @@ android {
   namespace = "com.example"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
+  val localProperties = Properties()
+  val localPropertiesFile = rootProject.file("local.properties")
+  if (localPropertiesFile.exists()) {
+    localProperties.load(localPropertiesFile.inputStream())
+  }
+  val googleWebClientId = localProperties.getProperty("google.web.client.id")?.trim()
+    ?: System.getenv("GOOGLE_WEB_CLIENT_ID")?.trim()
+    ?: ""
+  val configuredApiBaseUrl = localProperties.getProperty("backend.api.url")?.trim()
+    ?: System.getenv("BACKEND_API_URL")?.trim()
+    ?: "https://raksha360-api.onrender.com/api/v1"
+
   defaultConfig {
     applicationId = "com.aistudio.naarikavach.safe7x"
     minSdk = 24
@@ -20,8 +33,9 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    buildConfigField("String", "DEFAULT_API_BASE_URL", "\"https://raksha360-api.onrender.com/api/v1\"")
+    buildConfigField("String", "DEFAULT_API_BASE_URL", "\"$configuredApiBaseUrl\"")
     buildConfigField("Boolean", "IS_PRODUCTION", "true")
+    buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
   }
 
   signingConfigs {
@@ -57,7 +71,7 @@ android {
     }
     debug {
       signingConfig = signingConfigs.getByName("debugConfig")
-      buildConfigField("String", "DEFAULT_API_BASE_URL", "\"http://10.0.2.2:4000/api/v1\"")
+      buildConfigField("String", "DEFAULT_API_BASE_URL", "\"$configuredApiBaseUrl\"")
       buildConfigField("Boolean", "IS_PRODUCTION", "false")
     }
   }

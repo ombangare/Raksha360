@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.FamilyRestroom
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
@@ -57,6 +59,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -87,6 +92,8 @@ fun HomeScreen(
     val voiceProfile by viewModel.voiceProfile.collectAsState()
     val isGuardModeActive by viewModel.isGuardModeActive.collectAsState()
     val currentLocation by viewModel.currentLocation.collectAsState()
+    val recentJourneys by viewModel.childSafetyJourneys.collectAsState()
+    val recentAuditLogs by viewModel.recentAuditLogs.collectAsState()
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -100,8 +107,10 @@ fun HomeScreen(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFFF8FAFC))
+            .statusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 18.dp, vertical = 14.dp)
+            .padding(bottom = 80.dp)
     ) {
         // 1. Top Profile Bar
         val currentUser = viewModel.currentUser
@@ -113,7 +122,13 @@ fun HomeScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onNavigate(NavRoutes.PRIVACY) }
+                    .padding(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 // Avatar circle with border
                 Box(
                     modifier = Modifier
@@ -190,7 +205,13 @@ fun HomeScreen(
 
         Spacer(modifier = Modifier.height(18.dp))
 
-        // 2. Current Location Card
+        // 2. Current Location Card - Dynamic and Honest Location
+        val isFallbackLocation = currentLocation.isFallback || currentLocation.latitude == 0.0
+        val locationTitle = if (isFallbackLocation) "Sadar, Nagpur (Estimated)" else currentLocation.description.ifBlank { "Nagpur, Maharashtra" }
+        val locationSubtitle = if (isFallbackLocation) "Baseline public infrastructure • GPS signal inactive" else "Live device coordinates verified • Accuracy ±${currentLocation.accuracy.toInt()}m"
+        val badgeLabel = if (isFallbackLocation) "Pilot Area" else "GPS Active"
+        val badgeColor = if (isFallbackLocation) Color(0xFFD97706) else SafeGreen
+
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -234,7 +255,7 @@ fun HomeScreen(
                             )
                         )
                         Text(
-                            text = "Sadar, Nagpur",
+                            text = locationTitle,
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = NavyDark,
@@ -243,7 +264,7 @@ fun HomeScreen(
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "Moderate safety signals\nBased on available data",
+                            text = locationSubtitle,
                             style = MaterialTheme.typography.bodySmall.copy(
                                 color = TextSecondary,
                                 fontSize = 11.sp,
@@ -253,11 +274,11 @@ fun HomeScreen(
                     }
                 }
 
-                // Safe Area Pill Badge
+                // Safe Area / Status Pill Badge
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
-                        .background(SafeGreen.copy(alpha = 0.12f))
+                        .background(badgeColor.copy(alpha = 0.12f))
                         .padding(horizontal = 10.dp, vertical = 5.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -265,13 +286,13 @@ fun HomeScreen(
                             modifier = Modifier
                                 .size(6.dp)
                                 .clip(CircleShape)
-                                .background(SafeGreen)
+                                .background(badgeColor)
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
-                            text = "Safe Area",
+                            text = badgeLabel,
                             style = MaterialTheme.typography.labelSmall.copy(
-                                color = SafeGreen,
+                                color = badgeColor,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 11.sp
                             )
@@ -281,7 +302,81 @@ fun HomeScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // 2B. AI Voice Safety Assistant Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onNavigate(NavRoutes.ASSISTANT) }
+                .testTag("ai_assistant_card"),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF6FF)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .background(ShieldBlue),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Mic,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "Raksha360 AI Assistant",
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = NavyDark,
+                                    fontSize = 15.sp
+                                )
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(ShieldBlue.copy(alpha = 0.15f))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text("ElevenLabs", color = ShieldBlue, fontWeight = FontWeight.Bold, fontSize = 9.sp)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Conversational safety guide · Tap to speak",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = TextSecondary,
+                                fontSize = 12.sp
+                            )
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = ShieldBlue,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
 
         // 3. 2x2 Quick Action Grid
         Row(modifier = Modifier.fillMaxWidth()) {
@@ -484,66 +579,196 @@ fun HomeScreen(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Recent Item Card (Matching Image: Journey Completed Sadar -> VNIT Today, 6:24 PM)
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onNavigate(NavRoutes.ACTIVE_JOURNEY) },
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-        ) {
-            Row(
+        // Dynamic Recent Activity Card (Real journeys or audit logs, or truthful standby state)
+        val latestJourney = recentJourneys.firstOrNull()
+        val latestLog = recentAuditLogs.firstOrNull()
+        val dateFormat = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault())
+
+        if (latestJourney != null) {
+            val isSafe = latestJourney.status == "SAFE_ARRIVAL"
+            val titleText = if (isSafe) "Journey Completed" else if (latestJourney.status == "ACTIVE") "Active Journey" else "Journey ${latestJourney.status.lowercase().replaceFirstChar { it.uppercase() }}"
+            val statusColor = if (isSafe) SafeGreen else ShieldBlue
+
+            Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    .clickable { onNavigate(NavRoutes.ACTIVE_JOURNEY) },
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(SafeGreen.copy(alpha = 0.12f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = null,
-                            tint = SafeGreen,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(12.dp))
-
-                    Column {
-                        Text(
-                            text = "Journey Completed",
-                            style = MaterialTheme.typography.titleSmall.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = NavyDark,
-                                fontSize = 14.sp
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(statusColor.copy(alpha = 0.12f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (isSafe) Icons.Default.Check else Icons.Default.NearMe,
+                                contentDescription = null,
+                                tint = statusColor,
+                                modifier = Modifier.size(18.dp)
                             )
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = "Sadar -> VNIT",
-                            style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp)
-                        )
-                        Text(
-                            text = "Today, 6:24 PM",
-                            style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
-                        )
-                    }
-                }
+                        }
 
-                Icon(
-                    imageVector = Icons.Default.ChevronRight,
-                    contentDescription = null,
-                    tint = TextMuted
-                )
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Column {
+                            Text(
+                                text = titleText,
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = NavyDark,
+                                    fontSize = 14.sp
+                                )
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "${latestJourney.originLabel} → ${latestJourney.destinationLabel}",
+                                style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp)
+                            )
+                            Text(
+                                text = dateFormat.format(Date(latestJourney.lastCheckInAt ?: latestJourney.startedAt)),
+                                style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
+                            )
+                        }
+                    }
+
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = null,
+                        tint = TextMuted
+                    )
+                }
+            }
+        } else if (latestLog != null) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onNavigate(NavRoutes.JOURNEY) },
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(ShieldBlue.copy(alpha = 0.12f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Security,
+                                contentDescription = null,
+                                tint = ShieldBlue,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Column {
+                            Text(
+                                text = latestLog.action.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() },
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = NavyDark,
+                                    fontSize = 14.sp
+                                )
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = latestLog.detail.take(65) + if (latestLog.detail.length > 65) "..." else "",
+                                style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp)
+                            )
+                            Text(
+                                text = dateFormat.format(Date(latestLog.timestamp)),
+                                style = MaterialTheme.typography.bodySmall.copy(color = TextMuted, fontSize = 11.sp)
+                            )
+                        }
+                    }
+
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = null,
+                        tint = TextMuted
+                    )
+                }
+            }
+        } else {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onNavigate(NavRoutes.ACTIVE_JOURNEY) },
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFF1F5F9)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Security,
+                                contentDescription = null,
+                                tint = TextMuted,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Column {
+                            Text(
+                                text = "No Recent Activity",
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = NavyDark,
+                                    fontSize = 14.sp
+                                )
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Start a safe journey or test Voice SOS",
+                                style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary, fontSize = 11.sp)
+                            )
+                        }
+                    }
+
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = null,
+                        tint = TextMuted
+                    )
+                }
             }
         }
 
