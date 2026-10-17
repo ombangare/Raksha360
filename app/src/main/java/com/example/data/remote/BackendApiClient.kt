@@ -796,6 +796,7 @@ class BackendApiClient(
                             agentId = resObj.optString("agentId", "agent_3701m51qchkaenxsjnzr8jvrm66"),
                             agentName = resObj.optString("agentName", "Raksha360 AI Assistant"),
                             signedUrl = null,
+                            conversationToken = null,
                             message = detail,
                             error = detail
                         )
@@ -804,6 +805,7 @@ class BackendApiClient(
 
                 val errorMsg = resObj.optString("error").takeIf { it.isNotBlank() && it != "null" }
                 val messageText = resObj.optString("message").takeIf { it.isNotBlank() && it != "null" }
+                val token = resObj.optString("conversationToken").takeIf { it.isNotBlank() && it != "null" }
 
                 Result.success(
                     AssistantSessionResponse(
@@ -811,6 +813,7 @@ class BackendApiClient(
                         agentId = resObj.optString("agentId", "agent_3701m51qchkaenxsjnzr8jvrm66"),
                         agentName = resObj.optString("agentName", "Raksha360 AI Assistant"),
                         signedUrl = resObj.optString("signedUrl").takeIf { it.isNotBlank() && it != "null" },
+                        conversationToken = token,
                         message = messageText ?: errorMsg,
                         error = errorMsg ?: messageText
                     )

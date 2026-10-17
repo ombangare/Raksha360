@@ -719,6 +719,16 @@ class NaariKavachComprehensiveTest {
         assertFalse("Session must not be configured", sessionUnconfigured.configured)
         assertNull("Signed URL must be null when unconfigured", sessionUnconfigured.signedUrl)
         assertTrue(sessionUnconfigured.error!!.contains("ELEVENLABS_API_KEY"))
+
+        val sessionWithToken = com.example.data.remote.AssistantSessionResponse(
+            configured = true,
+            agentId = "agent_3701m51qchkaenxsjnzr8jvrm66",
+            agentName = "Raksha360 AI Assistant",
+            signedUrl = null,
+            conversationToken = "conv_tok_abc123"
+        )
+        assertTrue(sessionWithToken.configured)
+        assertEquals("conv_tok_abc123", sessionWithToken.conversationToken)
     }
 
     // 13. MainViewModel Startup & Flow Initialization Regression Test

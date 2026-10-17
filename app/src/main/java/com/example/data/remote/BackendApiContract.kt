@@ -111,6 +111,7 @@ data class AssistantSessionResponse(
     val agentId: String,
     val agentName: String,
     val signedUrl: String?,
+    val conversationToken: String? = null,
     val message: String? = null,
     val error: String? = null
 )

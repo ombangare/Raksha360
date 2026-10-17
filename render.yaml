@@ -20,4 +20,8 @@ services:
         generateValue: true
       - key: RAKSHA360_DASHBOARD_TOKEN
         generateValue: true
+      - key: ELEVENLABS_AGENT_ID
+        value: agent_3701m51qchkaenxsjnzr8jvrm66
+      - key: ELEVENLABS_API_KEY
+        sync: false
 

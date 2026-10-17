@@ -2418,12 +2418,23 @@ async def get_assistant_session() -> dict[str, Any]:
             if res.status_code == 200:
                 data = res.json()
                 diagnostics["stage"] = "TOKEN_ACQUIRED"
+                signed_url = data.get("signed_url")
+                conversation_token = data.get("token")
+                if not conversation_token and signed_url:
+                    try:
+                        from urllib.parse import urlparse, parse_qs
+                        qs = parse_qs(urlparse(signed_url).query)
+                        conversation_token = qs.get("token", [None])[0]
+                    except Exception:
+                        pass
+
                 logger.info("ElevenLabs session request [corr=%s]: stage=TOKEN_ACQUIRED status=200 elapsed=%dms", correlation_id, elapsed_ms)
                 return {
                     "configured": True,
                     "agentId": agent_id,
                     "agentName": "Raksha360 AI Assistant",
-                    "signedUrl": data.get("signed_url"),
+                    "signedUrl": signed_url,
+                    "conversationToken": conversation_token,
                     "diagnostics": diagnostics,
                 }
             elif res.status_code in (401, 403):

@@ -1452,7 +1452,7 @@ def test_elevenlabs_assistant_session_endpoint(client: TestClient, monkeypatch):
             class MockResponse:
                 status_code = 200
                 def json(self):
-                    return {"signed_url": "wss://api.elevenlabs.io/v1/convai/conversation?agent_id=agent_3701m51qchkaenxsjnzr8jvrm66&signature=fake_sig"}
+                    return {"signed_url": "wss://api.elevenlabs.io/v1/convai/conversation?agent_id=agent_3701m51qchkaenxsjnzr8jvrm66&token=fake_tok_123&signature=fake_sig"}
             return MockResponse()
 
     monkeypatch.setattr(api.httpx, "AsyncClient", MockAsyncClient)
@@ -1462,6 +1462,7 @@ def test_elevenlabs_assistant_session_endpoint(client: TestClient, monkeypatch):
     assert data_conf["configured"] is True
     assert "wss://api.elevenlabs.io" in data_conf["signedUrl"]
     assert data_conf["agentId"] == "agent_3701m51qchkaenxsjnzr8jvrm66"
+    assert data_conf["conversationToken"] == "fake_tok_123"
 
     # 4. Upstream ElevenLabs error (401/403) handles gracefully without leaking API key
     class MockErrorAsyncClient:

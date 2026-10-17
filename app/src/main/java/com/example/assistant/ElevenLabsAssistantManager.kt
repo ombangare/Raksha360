@@ -124,13 +124,18 @@ class ElevenLabsAssistantManager(
             val sessionResult = backendClient.getAssistantSession()
             sessionResult.fold(
                 onSuccess = { session ->
-                    if (!session.configured || session.signedUrl.isNullOrBlank()) {
+                    val wsUrl = session.signedUrl
+                        ?: session.conversationToken?.let { tok ->
+                            "wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${session.agentId}&token=$tok"
+                        }
+
+                    if (!session.configured || wsUrl.isNullOrBlank()) {
                         _state.value = State.UNCONFIGURED
                         val err = session.error ?: session.message ?: "Safety assistant service is currently unavailable."
                         _errorMessage.value = err
                         appendMessage(MessageSender.SYSTEM, err)
                     } else {
-                        connectWebSocket(session.signedUrl)
+                        connectWebSocket(wsUrl)
                     }
                 },
                 onFailure = { err ->
