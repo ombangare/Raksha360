@@ -29,6 +29,12 @@ sealed class PoliceDatasetStatus {
         val message: String = "No official Nagpur Police dataset connected. Safety signals are based on verified infrastructure and community check-ins."
     ) : PoliceDatasetStatus()
 
+    data class PublicDirectoryConnected(
+        val sourceAgency: String = "Nagpur City Police Public Directory (nagpurpolice.gov.in)",
+        val totalRecords: Int = 37,
+        val disclaimer: String = "Public Directory Reference • Baseline Infrastructure Active. No live CAD/dispatch integration connected."
+    ) : PoliceDatasetStatus()
+
     data class DatasetActive(
         val sourceAgency: String, // e.g. "Nagpur City Police - Crime Branch"
         val totalRecords: Int,
@@ -63,19 +69,31 @@ data class AreaSafetyContext(
     val infrastructureScore: Float, // 0.0 (low presence) to 1.0 (dense police/hospitals)
     val communitySignalScore: Float, // 0.0 to 1.0 based on verified check-ins
     val policeDataAvailable: Boolean,
-    val advisoryNotice: String
+    val datasetStatus: PoliceDatasetStatus = PoliceDatasetStatus.PublicDirectoryConnected(),
+    val datasetDisclosure: String = "Public Directory Reference • Baseline Infrastructure Active",
+    val advisoryNotice: String = "Safety signals based on verified public infrastructure. Baseline infrastructure active."
 )
 
 class SafetyScoringEngine(
-    private val datasetStatusProvider: () -> PoliceDatasetStatus = { PoliceDatasetStatus.NoDatasetConnected() }
+    private val datasetStatusProvider: () -> PoliceDatasetStatus = { PoliceDatasetStatus.PublicDirectoryConnected() }
 ) {
     fun computeAreaSafety(areaName: String): AreaSafetyContext {
-        val isPoliceConnected = datasetStatusProvider() is PoliceDatasetStatus.DatasetActive
+        val currentStatus = datasetStatusProvider()
+        val isPoliceConnected = currentStatus is PoliceDatasetStatus.DatasetActive
 
-        val advisory = if (isPoliceConnected) {
-            "Safety signals informed by official records and infrastructure presence."
-        } else {
-            "Safety signals based on verified public infrastructure. No official police dataset connected."
+        val (disclosure, advisory) = when (currentStatus) {
+            is PoliceDatasetStatus.DatasetActive -> Pair(
+                "Nagpur Police Dataset Active",
+                "Safety signals informed by official records and infrastructure presence."
+            )
+            is PoliceDatasetStatus.PublicDirectoryConnected -> Pair(
+                "Public Directory Reference • Baseline Infrastructure Active",
+                "Public directory reference active. Verified baseline infrastructure. No live police dispatch connected."
+            )
+            is PoliceDatasetStatus.NoDatasetConnected -> Pair(
+                "No police dataset connected • Baseline infrastructure active",
+                "Safety signals based on verified public infrastructure. No official police dataset connected."
+            )
         }
 
         // Compute baseline infrastructure rating for Nagpur zones
@@ -88,6 +106,8 @@ class SafetyScoringEngine(
             infrastructureScore = infraRating,
             communitySignalScore = communityRating,
             policeDataAvailable = isPoliceConnected,
+            datasetStatus = currentStatus,
+            datasetDisclosure = disclosure,
             advisoryNotice = advisory
         )
     }

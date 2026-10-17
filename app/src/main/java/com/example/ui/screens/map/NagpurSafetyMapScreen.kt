@@ -105,14 +105,21 @@ fun NagpurSafetyMapScreen(
         context,
         Manifest.permission.ACCESS_FINE_LOCATION
     ) == PackageManager.PERMISSION_GRANTED
+    val hasCoarseLocation = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.ACCESS_COARSE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED
+    val hasLocationPermission = hasFineLocation || hasCoarseLocation
 
-    // Fallback location if permission denied or GPS not available
-    val activeUserCoordinates = if (hasFineLocation && rawLocation.latitude != 0.0) {
+    val isRealGpsActive = (rawLocation.status == LocationStatus.ACTIVE_GPS || rawLocation.status == LocationStatus.DEMO_MODE) && rawLocation.latitude != 0.0
+
+    // Coordinates used for map display (only real device GPS when available, otherwise Nagpur reference)
+    val activeUserCoordinates = if (isRealGpsActive) {
         GeoCoordinates(rawLocation.latitude, rawLocation.longitude)
     } else {
         NagpurGeoConfig.NAGPUR_CENTER
     }
-    val isLocationFallback = !hasFineLocation || rawLocation.latitude == 0.0
+    val isLocationFallback = !isRealGpsActive
 
     // Combine all 37 verified Nagpur police stations with verified hospitals and campuses
     val allWaypoints = remember(policeStations) {
@@ -138,7 +145,7 @@ fun NagpurSafetyMapScreen(
         }
     }
 
-    // Determine the nearest verified police station to the user's active coordinates
+    // Determine the nearest verified police station to active coordinates
     val nearestStation = remember(activeUserCoordinates, allWaypoints) {
         allWaypoints.filter { it.category == "POLICE_STATION" }
             .minByOrNull { wp ->
@@ -150,21 +157,32 @@ fun NagpurSafetyMapScreen(
                 )
             }
     }
-    val nearestDistanceKm = remember(activeUserCoordinates, nearestStation) {
-        nearestStation?.let {
+
+    // Distance in km calculated ONLY when real device location is available.
+    // Truthfulness mandate: Never compute or display distance from Nagpur center reference as user distance.
+    val nearestDistanceKm: Double? = remember(isRealGpsActive, rawLocation.latitude, rawLocation.longitude, nearestStation) {
+        if (isRealGpsActive && nearestStation != null) {
             calculateDistanceKm(
-                activeUserCoordinates.latitude,
-                activeUserCoordinates.longitude,
-                it.coordinates.latitude,
-                it.coordinates.longitude
+                rawLocation.latitude,
+                rawLocation.longitude,
+                nearestStation.coordinates.latitude,
+                nearestStation.coordinates.longitude
             )
-        } ?: 0.0
+        } else {
+            null
+        }
     }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) {
-        // Map will automatically update with current location
+    ) { perms ->
+        val granted = perms[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                      perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (granted) {
+            viewModel.startLocationUpdates()
+        } else {
+            viewModel.onLocationPermissionDenied()
+        }
     }
 
     val speechLauncher = rememberLauncherForActivityResult(
@@ -179,9 +197,27 @@ fun NagpurSafetyMapScreen(
     var mapViewInstance by remember { mutableStateOf<View?>(null) }
     val safetyAreaContext = remember { viewModel.safetyScoringEngine.computeAreaSafety("Sadar, Nagpur") }
 
+    // Start location updates on screen entry; stop on dispose
     DisposableEffect(Unit) {
+        viewModel.startLocationUpdates()
         onDispose {
+            viewModel.stopLocationUpdates()
             mapViewInstance?.let { viewModel.mapProvider.onDestroy(it) }
+        }
+    }
+
+    // Dynamically update marker on map when live GPS coordinates change
+    androidx.compose.runtime.LaunchedEffect(rawLocation) {
+        mapViewInstance?.let { view ->
+            if (isRealGpsActive) {
+                viewModel.mapProvider.updateUserLocation(
+                    view = view,
+                    coordinates = GeoCoordinates(rawLocation.latitude, rawLocation.longitude),
+                    isFallback = false,
+                    title = "Current Location (Verified GPS)",
+                    snippet = "Accuracy ±${rawLocation.accuracy.toInt()}m • ${rawLocation.provenance}"
+                )
+            }
         }
     }
 
@@ -350,32 +386,29 @@ fun NagpurSafetyMapScreen(
                 )
             }
 
-            // Safety Data Status Indicator (Honest disclosure: No fabricated police data)
+            // Safety Data Status Indicator (Truthful disclosure per audit mandate)
             Spacer(modifier = Modifier.height(8.dp))
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
-                    .background(Color.White.copy(alpha = 0.92f))
-                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                    .background(Color.White.copy(alpha = 0.95f))
+                    .border(1.dp, Color(0xFFE2E8F0), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 10.dp, vertical = 5.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
                         imageVector = Icons.Default.Info,
                         contentDescription = null,
-                        tint = if (safetyAreaContext.policeDataAvailable) SafeGreen else Color(0xFFD97706),
+                        tint = if (safetyAreaContext.policeDataAvailable) SafeGreen else ShieldBlue,
                         modifier = Modifier.size(13.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = if (safetyAreaContext.policeDataAvailable) {
-                            "Nagpur Police Dataset Active"
-                        } else {
-                            "No police dataset connected • Baseline infrastructure active"
-                        },
+                        text = safetyAreaContext.datasetDisclosure,
                         style = MaterialTheme.typography.labelSmall.copy(
                             color = NavyDark,
                             fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.SemiBold
                         )
                     )
                 }
@@ -470,9 +503,13 @@ fun NagpurSafetyMapScreen(
                     .background(Color.White)
                     .border(1.dp, Color(0xFFCBD5E1), CircleShape)
                     .clickable {
-                        if (hasFineLocation) {
-                            mapViewInstance?.let {
-                                viewModel.mapProvider.updateCenter(it, activeUserCoordinates, 16.0)
+                        if (hasLocationPermission) {
+                            if (isRealGpsActive) {
+                                mapViewInstance?.let {
+                                    viewModel.mapProvider.updateCenter(it, activeUserCoordinates, 16.0)
+                                }
+                            } else {
+                                viewModel.retryLocationAcquisition()
                             }
                         } else {
                             locationPermissionLauncher.launch(
@@ -488,7 +525,7 @@ fun NagpurSafetyMapScreen(
                 Icon(
                     imageVector = Icons.Default.MyLocation,
                     contentDescription = "My Location",
-                    tint = if (hasFineLocation) SafeGreen else NavyDark,
+                    tint = if (isRealGpsActive) SafeGreen else if (hasLocationPermission) ShieldBlue else NavyDark,
                     modifier = Modifier.size(22.dp)
                 )
             }
@@ -530,43 +567,53 @@ fun NagpurSafetyMapScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.Top
                 ) {
-                    Row(verticalAlignment = Alignment.Top) {
+                    Row(verticalAlignment = Alignment.Top, modifier = Modifier.weight(1f)) {
                         Box(
                             modifier = Modifier
                                 .size(36.dp)
                                 .clip(CircleShape)
-                                .background(EvidenceOrange.copy(alpha = 0.15f)),
+                                .background(if (isRealGpsActive) SafeGreen.copy(alpha = 0.15f) else EvidenceOrange.copy(alpha = 0.15f)),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.LocationOn,
                                 contentDescription = null,
-                                tint = EvidenceOrange,
+                                tint = if (isRealGpsActive) SafeGreen else EvidenceOrange,
                                 modifier = Modifier.size(20.dp)
                             )
                         }
 
                         Spacer(modifier = Modifier.width(12.dp))
 
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             val mapLocationTitle = when (rawLocation.status) {
-                                LocationStatus.ACTIVE_GPS -> rawLocation.description.ifBlank { "Nagpur, Maharashtra" }
+                                LocationStatus.ACTIVE_GPS -> rawLocation.description.ifBlank { "Nagpur • Live GPS" }
                                 LocationStatus.DEMO_MODE -> "Nagpur (Demo Simulation)"
                                 LocationStatus.PERMISSION_DENIED -> "Location Permission Denied"
                                 LocationStatus.GPS_DISABLED -> "Device GPS Disabled"
+                                LocationStatus.TIMEOUT -> "GPS Acquisition Timed Out"
                                 LocationStatus.STALE -> rawLocation.description.ifBlank { "Last Known Location" }
-                                else -> "Nagpur Safety Map"
+                                else -> "Acquiring Device GPS…"
                             }
                             Text(
                                 text = mapLocationTitle,
                                 style = MaterialTheme.typography.titleMedium.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = NavyDark,
-                                    fontSize = 16.sp
+                                    fontSize = 15.sp
                                 )
                             )
+                            val locationSubtitle = when (rawLocation.status) {
+                                LocationStatus.ACTIVE_GPS -> "Hardware GPS verified • Accuracy ±${rawLocation.accuracy.toInt()}m"
+                                LocationStatus.DEMO_MODE -> "Simulated coordinates active • Pilot zone"
+                                LocationStatus.PERMISSION_DENIED -> "Grant location permission to enable real-time map tracking"
+                                LocationStatus.GPS_DISABLED -> "Location services are turned off in Android settings"
+                                LocationStatus.TIMEOUT -> "Fix timed out after 15s • Tap Retry to scan again"
+                                LocationStatus.STALE -> "GPS signal lost • Showing last known fix"
+                                else -> "Searching for satellite & network fix • Centered on Nagpur reference"
+                            }
                             Text(
-                                text = safetyAreaContext.advisoryNotice,
+                                text = locationSubtitle,
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = TextSecondary,
                                     fontSize = 11.sp,
@@ -585,23 +632,65 @@ fun NagpurSafetyMapScreen(
                         }
                     }
 
-                    // External Navigation Intent
-                    IconButton(
-                        onClick = {
-                            val uri = if (!isLocationFallback && activeUserCoordinates.latitude != 0.0) {
-                                Uri.parse("geo:${activeUserCoordinates.latitude},${activeUserCoordinates.longitude}?q=${activeUserCoordinates.latitude},${activeUserCoordinates.longitude}")
-                            } else {
-                                Uri.parse("geo:21.1458,79.0882?q=Nagpur")
+                    // Action buttons (Retry / Settings / Navigate)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        when (rawLocation.status) {
+                            LocationStatus.TIMEOUT, LocationStatus.ACQUIRING, LocationStatus.STALE -> {
+                                TextButton(
+                                    onClick = { viewModel.retryLocationAcquisition() },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text("Retry", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ShieldBlue)
+                                }
                             }
-                            context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                            LocationStatus.PERMISSION_DENIED -> {
+                                TextButton(
+                                    onClick = {
+                                        locationPermissionLauncher.launch(
+                                            arrayOf(
+                                                Manifest.permission.ACCESS_FINE_LOCATION,
+                                                Manifest.permission.ACCESS_COARSE_LOCATION
+                                            )
+                                        )
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text("Grant", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = EmergencyRed)
+                                }
+                            }
+                            LocationStatus.GPS_DISABLED -> {
+                                TextButton(
+                                    onClick = {
+                                        try {
+                                            context.startActivity(Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                                        } catch (_: Exception) {}
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text("Enable", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFFD97706))
+                                }
+                            }
+                            else -> {}
                         }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Navigation,
-                            contentDescription = "Navigate Externally",
-                            tint = Color(0xFF64748B),
-                            modifier = Modifier.size(20.dp)
-                        )
+
+                        // External Navigation Intent
+                        IconButton(
+                            onClick = {
+                                val uri = if (!isLocationFallback && activeUserCoordinates.latitude != 0.0) {
+                                    Uri.parse("geo:${activeUserCoordinates.latitude},${activeUserCoordinates.longitude}?q=${activeUserCoordinates.latitude},${activeUserCoordinates.longitude}")
+                                } else {
+                                    Uri.parse("geo:21.1458,79.0882?q=Nagpur")
+                                }
+                                context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Navigation,
+                                contentDescription = "Navigate Externally",
+                                tint = Color(0xFF64748B),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
 
@@ -654,10 +743,16 @@ fun NagpurSafetyMapScreen(
                                             fontSize = 13.sp
                                         )
                                     )
+                                    val distanceText = if (nearestDistanceKm != null) {
+                                        "Nearest Station • ${String.format("%.1f km away", nearestDistanceKm)}"
+                                    } else {
+                                        "Nearest Station • Distance unavailable (GPS required)"
+                                    }
+                                    val distanceColor = if (nearestDistanceKm != null) SafeGreen else Color(0xFFD97706)
                                     Text(
-                                        text = "Nearest Station • ${String.format("%.1f km away", nearestDistanceKm)}",
+                                        text = distanceText,
                                         style = MaterialTheme.typography.bodySmall.copy(
-                                            color = SafeGreen,
+                                            color = distanceColor,
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.SemiBold
                                         )

@@ -257,6 +257,12 @@ fun HomeScreen(
                 badgeLabel = "Stale Fix"
                 badgeColor = Color(0xFFD97706)
             }
+            LocationStatus.TIMEOUT -> {
+                locationTitle = "GPS Acquisition Timed Out"
+                locationSubtitle = "Could not obtain GPS fix • Tap to open map and retry"
+                badgeLabel = "Timeout"
+                badgeColor = EmergencyRed
+            }
             LocationStatus.ACQUIRING, LocationStatus.UNAVAILABLE -> {
                 locationTitle = "Acquiring GPS fix…"
                 locationSubtitle = "Searching for satellite signals • Hold device in open area"

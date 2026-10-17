@@ -80,16 +80,16 @@ class OsmNativeMapProvider : IMapViewProvider {
         }
 
         // 4. Add User Location Marker (with fallback indicator if GPS unavailable)
-        val activeLocation = userLocation ?: NagpurGeoConfig.SADAR_PILOT_CENTER
+        val activeLocation = userLocation ?: NagpurGeoConfig.NAGPUR_CENTER
         val userMarker = Marker(mapView).apply {
             position = GeoPoint(activeLocation.latitude, activeLocation.longitude)
             title = if (isUserLocationFallback) {
-                "Sadar, Nagpur (Fallback Location)"
+                "Nagpur Reference Center (Offline Demo / Fallback)"
             } else {
                 "Current Location (Verified GPS)"
             }
             snippet = if (isUserLocationFallback) {
-                "Precise location unavailable. Centered on Sadar Pilot Area."
+                "Precise device GPS unavailable. Centered on Nagpur reference coordinates."
             } else {
                 "Accurate location active"
             }
@@ -97,6 +97,7 @@ class OsmNativeMapProvider : IMapViewProvider {
             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
         }
         mapView.overlays.add(userMarker)
+        mapView.tag = userMarker
 
         return mapView
     }
@@ -185,6 +186,25 @@ class OsmNativeMapProvider : IMapViewProvider {
             view.controller.animateTo(GeoPoint(coordinates.latitude, coordinates.longitude))
             if (zoomLevel != null) {
                 view.controller.setZoom(zoomLevel)
+            }
+        }
+    }
+
+    override fun updateUserLocation(
+        view: View,
+        coordinates: GeoCoordinates,
+        isFallback: Boolean,
+        title: String?,
+        snippet: String?
+    ) {
+        if (view is MapView) {
+            val marker = view.tag as? Marker
+            if (marker != null) {
+                marker.position = GeoPoint(coordinates.latitude, coordinates.longitude)
+                marker.icon = createUserLocationDrawable(view.context, isFallback)
+                if (title != null) marker.title = title
+                if (snippet != null) marker.snippet = snippet
+                view.invalidate()
             }
         }
     }

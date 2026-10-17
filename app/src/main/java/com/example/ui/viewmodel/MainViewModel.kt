@@ -112,6 +112,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun findNearestPoliceStation(lat: Double, lon: Double) = app.policeDirectoryRepo.findNearestStation(lat, lon)
     fun refreshHelplinesFromBackend() = viewModelScope.launch { app.policeDirectoryRepo.refreshHelplinesFromBackend() }
 
+    fun startLocationUpdates(minTimeMs: Long = 4000, minDistanceM: Float = 5f) {
+        app.locationManager.startLocationUpdates(minTimeMs, minDistanceM)
+    }
+
+    fun stopLocationUpdates() {
+        app.locationManager.stopLocationUpdates()
+    }
+
+    fun retryLocationAcquisition() {
+        app.locationManager.retryLocationAcquisition()
+    }
+
+    fun onLocationPermissionDenied() {
+        app.locationManager.onPermissionDenied()
+    }
+
     suspend fun signInWithGoogle(activity: android.app.Activity): Result<com.example.data.repository.UserProfile> {
         val result = app.authenticationRepo.signInWithGoogle(activity)
         if (result.isSuccess) {

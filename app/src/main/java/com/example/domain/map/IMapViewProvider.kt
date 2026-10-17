@@ -20,5 +20,12 @@ interface IMapViewProvider {
     ): View
 
     fun updateCenter(view: View, coordinates: GeoCoordinates, zoomLevel: Double? = null)
+    fun updateUserLocation(
+        view: View,
+        coordinates: GeoCoordinates,
+        isFallback: Boolean,
+        title: String? = null,
+        snippet: String? = null
+    )
     fun onDestroy(view: View)
 }
