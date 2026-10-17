@@ -1,0 +1,59 @@
+{
+  "generated_at_utc": "2026-10-16T23:08:53+00:00",
+  "bbox_south_west_north_east": [
+    20.95,
+    78.7,
+    21.35,
+    79.4
+  ],
+  "bbox_note": "Extraction window only; not an official municipal boundary.",
+  "source": "OpenStreetMap contributors",
+  "license": "ODbL 1.0; provide attribution and observe ODbL obligations",
+  "layers": {
+    "facilities": {
+      "osm_elements": 1810,
+      "geojson_features": 1810,
+      "counts": {
+        "nodes": 1592,
+        "ways": 217,
+        "relations": 1,
+        "area_polygons": 0,
+        "center_or_line_fallbacks": 0
+      },
+      "endpoint": "cached_local_raw_extract",
+      "osm_base_timestamp": "2026-10-16T23:01:08Z",
+      "raw_file": "facilities_raw_osm.json",
+      "geojson_file": "facilities.geojson"
+    },
+    "green_context": {
+      "osm_elements": 1597,
+      "geojson_features": 1597,
+      "counts": {
+        "nodes": 488,
+        "ways": 1097,
+        "relations": 12,
+        "area_polygons": 1098,
+        "center_or_line_fallbacks": 499
+      },
+      "endpoint": "cached_local_raw_extract",
+      "osm_base_timestamp": "2026-10-16T23:02:11Z",
+      "raw_file": "green_context_raw_osm.json",
+      "geojson_file": "green_context.geojson"
+    },
+    "roads_lighting": {
+      "osm_elements": 2163,
+      "geojson_features": 2163,
+      "counts": {
+        "nodes": 101,
+        "ways": 2062,
+        "relations": 0,
+        "area_polygons": 0,
+        "center_or_line_fallbacks": 0
+      },
+      "endpoint": "https://overpass-api.de/api/interpreter",
+      "osm_base_timestamp": "2026-10-16T23:08:18Z",
+      "raw_file": "roads_lighting_raw_osm.json",
+      "geojson_file": "roads_lighting.geojson"
+    }
+  }
+}

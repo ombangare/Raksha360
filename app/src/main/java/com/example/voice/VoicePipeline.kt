@@ -18,7 +18,7 @@ class VoicePipeline(
     data class EnrolledProfileData(
         val targetPhrase: String,
         val speakerEmbedding: FloatArray,
-        val verificationThreshold: Float = 0.82f,
+        val verificationThreshold: Float = 0.72f,
         val isEnrolled: Boolean = true
     )
 
@@ -39,7 +39,7 @@ class VoicePipeline(
         val now = System.currentTimeMillis()
         val profile = getEnrolledProfile()
         if (profile == null || !profile.isEnrolled || profile.speakerEmbedding.isEmpty() || audioWindow.isEmpty()) {
-            return rejected(now, modelEngine.modelStatusLabel, profile?.verificationThreshold ?: 0.82f)
+            return rejected(now, modelEngine.modelStatusLabel, profile?.verificationThreshold ?: 0.72f)
         }
         if (now - lastTriggerTimestamp < cooldownPeriodMs) {
             return rejected(now, "Voice SOS cooldown active", profile.verificationThreshold)
@@ -62,6 +62,12 @@ class VoicePipeline(
         val speakerResult = modelEngine.verifySpeaker(utterance, profile.speakerEmbedding, profile.verificationThreshold)
         val confirmed = phraseResult.confidence >= 0.70f && speakerResult.isSpeakerVerified &&
             speakerResult.similarityScore >= profile.verificationThreshold
+
+        android.util.Log.d(
+            "VoicePipeline",
+            "Voice SOS evaluation: phraseMatched=${phraseResult.phraseMatched}, phraseConf=${phraseResult.confidence}, spkScore=${speakerResult.similarityScore}, threshold=${profile.verificationThreshold}, spkVerified=${speakerResult.isSpeakerVerified}, confirmed=$confirmed"
+        )
+
         recentAudio.clear()
         modelEngine.resetPhraseRecognizer()
         if (confirmed) lastTriggerTimestamp = now

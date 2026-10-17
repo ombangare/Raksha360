@@ -25,6 +25,7 @@ import android.util.Log
 import com.example.data.repository.AuthStage
 import com.example.data.repository.AuthErrorCategory
 import com.example.data.repository.AuthenticationException
+import com.example.domain.route.*
 
 class BackendApiClient(
     private val context: Context,
@@ -836,4 +837,219 @@ class BackendApiClient(
                 Result.failure(e)
             }
         }
+
+    suspend fun analyzeRoute(
+        coordinates: List<Pair<Double, Double>>,
+        label: String = "Candidate Route",
+        mode: String = "walking"
+    ): Result<RouteAnalysisResult> = withContext(Dispatchers.IO) {
+        val config = getApiConfig()
+        try {
+            val coordsArray = JSONArray()
+            coordinates.forEach { (lat, lon) ->
+                coordsArray.put(JSONObject().apply {
+                    put("latitude", lat)
+                    put("longitude", lon)
+                })
+            }
+            val body = JSONObject().apply {
+                put("coordinates", coordsArray)
+                put("label", label)
+                put("mode", mode)
+            }.toString().toRequestBody(jsonMedia)
+
+            val request = Request.Builder()
+                .url("${config.baseUrl.removeSuffix("/")}/routes/analyze")
+                .header("Authorization", "Bearer ${config.authToken}")
+                .post(body)
+                .build()
+
+            val response = okHttpClient.newCall(request).execute()
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(IOException("Route analyze failed: HTTP ${response.code}"))
+            }
+            val resObj = JSONObject(response.body?.string() ?: "{}")
+
+            val lightingObj = resObj.optJSONObject("lightingCoverage") ?: JSONObject()
+            val woodedObj = resObj.optJSONObject("woodedExposure") ?: JSONObject()
+            val isolationObj = resObj.optJSONObject("relativeIsolation") ?: JSONObject()
+            val accidentObj = resObj.optJSONObject("historicalAccidentExposure") ?: JSONObject()
+            val freshnessObj = resObj.optJSONObject("dataFreshness") ?: JSONObject()
+
+            val reasons = mutableListOf<String>()
+            val reasonsArray = resObj.optJSONArray("evidenceExplanations")
+            if (reasonsArray != null) {
+                for (i in 0 until reasonsArray.length()) {
+                    reasons.add(reasonsArray.getString(i))
+                }
+            }
+
+            val categories = mutableListOf<String>()
+            val catArray = woodedObj.optJSONArray("categories")
+            if (catArray != null) {
+                for (i in 0 until catArray.length()) {
+                    categories.add(catArray.getString(i))
+                }
+            }
+
+            val nearBlackspots = mutableListOf<RouteBlackspotItem>()
+            val bsArray = accidentObj.optJSONArray("nearBlackspots")
+            if (bsArray != null) {
+                for (i in 0 until bsArray.length()) {
+                    val bs = bsArray.getJSONObject(i)
+                    nearBlackspots.add(
+                        RouteBlackspotItem(
+                            id = bs.optInt("id", 0),
+                            name = bs.optString("name", ""),
+                            distanceMeters = bs.optDouble("distanceMeters", 0.0),
+                            highway = bs.optString("highway", "")
+                        )
+                    )
+                }
+            }
+
+            val result = RouteAnalysisResult(
+                label = resObj.optString("label", label),
+                mode = resObj.optString("mode", mode),
+                routeLengthKm = resObj.optDouble("routeLengthKm", 0.0),
+                etaMinutes = resObj.optInt("etaMinutes", 0),
+                primaryLabel = resObj.optString("primaryLabel", "Route Context"),
+                compositeSupportScore = resObj.optDouble("compositeSupportScore", 50.0),
+                supportCoveragePercent = resObj.optDouble("supportCoveragePercent", 0.0),
+                nearestEmergencyFacility = resObj.optString("nearestEmergencyFacility").takeIf { it.isNotBlank() && it != "null" },
+                lightingCoverage = RouteLightingCoverage(
+                    explicitLitKm = lightingObj.optDouble("explicitLitKm", 0.0),
+                    explicitUnlitKm = lightingObj.optDouble("explicitUnlitKm", 0.0),
+                    unknownLightingKm = lightingObj.optDouble("unknownLightingKm", 0.0),
+                    note = lightingObj.optString("note", "")
+                ),
+                woodedExposure = RouteWoodedExposure(
+                    intersectingKm = woodedObj.optDouble("intersectingKm", 0.0),
+                    coveragePercent = woodedObj.optDouble("coveragePercent", 0.0),
+                    categories = categories,
+                    note = woodedObj.optString("note", "")
+                ),
+                relativeIsolation = RouteRelativeIsolation(
+                    lowSupportSegmentsKm = isolationObj.optDouble("lowSupportSegmentsKm", 0.0),
+                    coincidingSignals = isolationObj.optString("coincidingSignals", "")
+                ),
+                historicalAccidentExposure = RouteHistoricalAccidentExposure(
+                    blackspotCount = accidentObj.optInt("blackspotCount", 0),
+                    exposureScore = accidentObj.optDouble("exposureScore", 0.0),
+                    nearBlackspots = nearBlackspots,
+                    disclaimer = accidentObj.optString("disclaimer", "")
+                ),
+                evidenceExplanations = reasons,
+                dataFreshness = RouteDataFreshness(
+                    extractedAtUtc = freshnessObj.optString("extractedAtUtc", ""),
+                    source = freshnessObj.optString("source", ""),
+                    coverageNote = freshnessObj.optString("coverageNote", "")
+                )
+            )
+            Result.success(result)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun compareRoutes(
+        routes: List<RouteCandidateInput>
+    ): Result<RouteComparisonSummary> = withContext(Dispatchers.IO) {
+        val config = getApiConfig()
+        try {
+            val routesArray = JSONArray()
+            routes.forEach { r ->
+                val coordsArray = JSONArray()
+                r.coordinates.forEach { (lat, lon) ->
+                    coordsArray.put(JSONObject().apply {
+                        put("latitude", lat)
+                        put("longitude", lon)
+                    })
+                }
+                routesArray.put(JSONObject().apply {
+                    put("id", r.id)
+                    put("label", r.label)
+                    put("mode", r.mode)
+                    put("coordinates", coordsArray)
+                })
+            }
+            val body = JSONObject().apply {
+                put("routes", routesArray)
+            }.toString().toRequestBody(jsonMedia)
+
+            val request = Request.Builder()
+                .url("${config.baseUrl.removeSuffix("/")}/routes/compare")
+                .header("Authorization", "Bearer ${config.authToken}")
+                .post(body)
+                .build()
+
+            val response = okHttpClient.newCall(request).execute()
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(IOException("Route compare failed: HTTP ${response.code}"))
+            }
+            val resObj = JSONObject(response.body?.string() ?: "{}")
+            val rankings = mutableListOf<RouteRankItem>()
+            val rankArray = resObj.optJSONArray("candidateRankings")
+            if (rankArray != null) {
+                for (i in 0 until rankArray.length()) {
+                    val item = rankArray.getJSONObject(i)
+                    rankings.add(
+                        RouteRankItem(
+                            routeId = item.optString("routeId", ""),
+                            label = item.optString("label", ""),
+                            compositeSupportScore = item.optDouble("compositeSupportScore", 50.0),
+                            primaryLabel = item.optString("primaryLabel", ""),
+                            routeLengthKm = item.optDouble("routeLengthKm", 0.0),
+                            etaMinutes = item.optInt("etaMinutes", 0),
+                            nearBlackspots = item.optInt("nearBlackspots", 0),
+                            woodedKm = item.optDouble("woodedKm", 0.0),
+                            supportCoveragePercent = item.optDouble("supportCoveragePercent", 0.0)
+                        )
+                    )
+                }
+            }
+
+            Result.success(
+                RouteComparisonSummary(
+                    candidateCount = resObj.optInt("candidateCount", rankings.size),
+                    mostSupportedRouteId = resObj.optString("mostSupportedRouteId").takeIf { it.isNotBlank() && it != "null" },
+                    recommendationNote = resObj.optString("recommendationNote", ""),
+                    candidateRankings = rankings
+                )
+            )
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun fetchRouteLayersSummary(): Result<RouteLayersSummary> = withContext(Dispatchers.IO) {
+        val config = getApiConfig()
+        try {
+            val request = Request.Builder()
+                .url("${config.baseUrl.removeSuffix("/")}/routes/layers/summary")
+                .header("Authorization", "Bearer ${config.authToken}")
+                .get()
+                .build()
+
+            val response = okHttpClient.newCall(request).execute()
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(IOException("Route layers summary failed: HTTP ${response.code}"))
+            }
+            val resObj = JSONObject(response.body?.string() ?: "{}")
+            val countsObj = resObj.optJSONObject("counts") ?: JSONObject()
+
+            Result.success(
+                RouteLayersSummary(
+                    status = resObj.optString("status", "LOADED"),
+                    blackspotCount = countsObj.optInt("blackspots", 0),
+                    facilitiesCount = countsObj.optInt("facilities", 0),
+                    greenPolygonCount = countsObj.optInt("greenPolygons", 0),
+                    roadFeaturesCount = countsObj.optInt("roadFeatures", 0),
+                    bboxNote = resObj.optString("bboxNote", "")
+                )
+            )
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }

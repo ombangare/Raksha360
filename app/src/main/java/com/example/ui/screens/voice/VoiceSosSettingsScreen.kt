@@ -31,15 +31,20 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import java.util.Locale
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -84,8 +89,13 @@ fun VoiceSosSettingsScreen(
     val isGuardModeActive by viewModel.isGuardModeActive.collectAsState()
     val liveRms by viewModel.liveRms.collectAsState()
     val testVerificationResult by viewModel.testVerificationResult.collectAsState()
+    val isShakeSosEnabled by viewModel.isShakeSosEnabled.collectAsState()
+    val shakeSensitivity by viewModel.shakeSensitivity.collectAsState()
     val testScope = rememberCoroutineScope()
     var testRecordingPending by remember { mutableStateOf(false) }
+    var isShakeTesting by remember { mutableStateOf(false) }
+    var currentShakeGForce by remember { mutableStateOf(1.0f) }
+    var shakeTestNotice by remember { mutableStateOf<String?>(null) }
 
     fun captureAndTestPhrase() {
         if (testRecordingPending) return
@@ -322,9 +332,199 @@ fun VoiceSosSettingsScreen(
             }
         }
 
+        // ---------------- Section 3: Physical Gesture (Shake SOS) ----------------
+        DisposableEffect(isShakeTesting) {
+            var detector: com.example.voice.sensor.ShakeDetector? = null
+            if (isShakeTesting) {
+                detector = com.example.voice.sensor.ShakeDetector(context) {
+                    shakeTestNotice = "Shake SOS gesture recognized! Accelerometer threshold & directional reversal verified."
+                }.apply {
+                    sensitivity = shakeSensitivity
+                    testGestureListener = { g -> currentShakeGForce = g }
+                    start()
+                }
+            }
+            onDispose {
+                detector?.stop()
+            }
+        }
+
         Spacer(modifier = Modifier.height(22.dp))
 
-        // Section 3: "Permissions"
+        Text(
+            text = "Physical Gesture Trigger",
+            style = MaterialTheme.typography.titleMedium.copy(
+                fontWeight = FontWeight.Bold,
+                color = NavyDark,
+                fontSize = 16.sp
+            )
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                // Shake SOS Toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(EvidenceOrange.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PhoneAndroid,
+                                contentDescription = null,
+                                tint = EvidenceOrange,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(12.dp))
+
+                        Column {
+                            Text(
+                                text = "Shake SOS Detection",
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = NavyDark,
+                                    fontSize = 14.sp
+                                )
+                            )
+                            Text(
+                                text = if (isShakeSosEnabled) "Physical gesture armed during Guard Mode" else "Opt-in: vigorously shake phone in emergency",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = TextSecondary,
+                                    fontSize = 11.sp
+                                )
+                            )
+                        }
+                    }
+
+                    Switch(
+                        checked = isShakeSosEnabled,
+                        onCheckedChange = { enabled ->
+                            viewModel.setShakeSosEnabled(enabled)
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = EvidenceOrange,
+                            uncheckedThumbColor = Color.White,
+                            uncheckedTrackColor = Color(0xFFCBD5E1)
+                        ),
+                        modifier = Modifier.testTag("shake_sos_switch")
+                    )
+                }
+
+                if (isShakeSosEnabled) {
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = "Sensitivity Level",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = TextMuted
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf("LOW", "MEDIUM", "HIGH").forEach { level ->
+                            val isSelected = shakeSensitivity.equals(level, ignoreCase = true)
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isSelected) EvidenceOrange else Color(0xFFF1F5F9))
+                                    .clickable { viewModel.setShakeSensitivity(level) }
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = level,
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        color = if (isSelected) Color.White else NavyDark,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        fontSize = 12.sp
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text(
+                        text = "Requires multi-directional shaking to prevent false triggers during walking, running, or car travel. 10-second cooldown protects against repeated alarms.",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Button(
+                        onClick = {
+                            if (isShakeTesting) {
+                                isShakeTesting = false
+                            } else {
+                                shakeTestNotice = null
+                                isShakeTesting = true
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(40.dp)
+                            .testTag("test_shake_button"),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isShakeTesting) Color(0xFFE2E8F0) else EvidenceOrange.copy(alpha = 0.12f),
+                            contentColor = if (isShakeTesting) NavyDark else EvidenceOrange
+                        )
+                    ) {
+                        Text(
+                            text = if (isShakeTesting) "Stop Shake Test (Live: ${String.format(Locale.ROOT, "%.1f", currentShakeGForce)}G)" else "Test Shake Sensor (No Emergency)",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                        )
+                    }
+
+                    if (shakeTestNotice != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = shakeTestNotice!!,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = SafeGreen,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 11.sp
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(22.dp))
+
+        // Section 4: "Permissions"
         Text(
             text = "Permissions",
             style = MaterialTheme.typography.titleMedium.copy(

@@ -239,7 +239,7 @@ fun VoiceSosEnrollmentScreen(
                     phrase = phrase.trim(),
                     embedding = embedding,
                     sampleCount = samples.size,
-                    threshold = 0.82f
+                    threshold = 0.72f
                 )
             }
 

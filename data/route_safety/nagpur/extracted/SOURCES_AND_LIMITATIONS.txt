@@ -1,0 +1,11 @@
+Raksha360 Nagpur route layers
+Extracted: 2026-10-16T23:08:53+00:00
+Source: OpenStreetMap contributors (ODbL 1.0)
+
+Extraction window south,west,north,east: 20.95,78.7,21.35,79.4
+This is a bounding-box planning window, not an official Nagpur municipal boundary.
+Missing OSM tags mean UNKNOWN, not NO. POIs can be outdated; validate operation and opening hours.
+Parks/woodland are land-cover context, not evidence of crime or danger. A route through trees is not automatically unsafe.
+Facility proximity is a support/access proxy, not proof a place is staffed, open, safe, or able to assist.
+Do not use center_or_line_only_not_validated_area geometry for polygon-overlap scoring.
+No official police dispatch is implied by these files. Inspect extraction_report.json and object timestamps.

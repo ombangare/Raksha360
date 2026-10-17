@@ -100,7 +100,7 @@ fun NaariKavachTopBar(
 
                 // Subtitle / City focus
                 Text(
-                    text = "Nagpur • Sadar Protection Sector",
+                    text = "Raksha360 • Nagpur Safety Network",
                     style = MaterialTheme.typography.bodySmall.copy(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 11.sp

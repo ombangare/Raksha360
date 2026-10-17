@@ -44,6 +44,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val selectedLanguage: StateFlow<String> = app.settingsRepo.selectedLanguage
     val autoRecordIncidentAudio: StateFlow<Boolean> = app.settingsRepo.autoRecordIncidentAudio
     val offlineLocationEmailConsent: StateFlow<Boolean> = app.settingsRepo.offlineLocationEmailConsent
+    val isShakeSosEnabled: StateFlow<Boolean> = app.settingsRepo.isShakeSosEnabled
+    val shakeSensitivity: StateFlow<String> = app.settingsRepo.shakeSensitivity
     val backendEndpointConfigured: StateFlow<Boolean> = app.settingsRepo.policeEndpointConfigured
     val backendEndpointUrl: StateFlow<String> = app.settingsRepo.policeEndpointUrl
     val backendAuthToken: StateFlow<String> = app.settingsRepo.policeAuthToken
@@ -490,7 +492,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    fun saveVoiceProfile(phrase: String, embedding: FloatArray, sampleCount: Int, threshold: Float = 0.82f): Boolean {
+    fun saveVoiceProfile(phrase: String, embedding: FloatArray, sampleCount: Int, threshold: Float = 0.72f): Boolean {
         val success = app.voiceProfileRepo.saveVoiceProfile(phrase, embedding, sampleCount, threshold)
         if (success) {
             app.auditLoggerService.logEnrollmentCompleted(sampleCount, threshold)
@@ -540,6 +542,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         syncOfflineLocationEmailSettings()
+    }
+
+    fun setShakeSosEnabled(enabled: Boolean) {
+        app.settingsRepo.setShakeSosEnabled(enabled)
+        app.applicationScope.launch {
+            app.auditLogRepo.log(
+                "SHAKE_SOS_SETTING_CHANGED",
+                "Physical gesture (Shake SOS) detection ${if (enabled) "enabled" else "disabled"}.",
+                "INFO"
+            )
+        }
+    }
+
+    fun setShakeSensitivity(sensitivity: String) {
+        app.settingsRepo.setShakeSensitivity(sensitivity)
     }
 
     fun updateTrustedContactActive(contact: TrustedContactEntity, enabled: Boolean) {
@@ -759,5 +776,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearTestResult() {
         _testVerificationResult.value = null
+    }
+
+    suspend fun analyzeRoute(
+        coordinates: List<Pair<Double, Double>>,
+        label: String = "Candidate Route",
+        mode: String = "walking"
+    ): Result<com.example.domain.route.RouteAnalysisResult> {
+        return app.backendClient.analyzeRoute(coordinates, label, mode)
+    }
+
+    suspend fun compareRoutes(
+        routes: List<com.example.domain.route.RouteCandidateInput>
+    ): Result<com.example.domain.route.RouteComparisonSummary> {
+        return app.backendClient.compareRoutes(routes)
+    }
+
+    suspend fun fetchRouteLayersSummary(): Result<com.example.domain.route.RouteLayersSummary> {
+        return app.backendClient.fetchRouteLayersSummary()
     }
 }

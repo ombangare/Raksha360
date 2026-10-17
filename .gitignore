@@ -22,6 +22,7 @@ captures/
 # Local runtime databases, backups, and WAL files
 backend/data/*.sqlite3*
 backend/data/backups/
+backend/data/attachments/
 *.sqlite3
 *.sqlite3-*
 *.sqlite3.*
@@ -49,4 +50,5 @@ distribution/*.aab
 # Local scratch and offline models
 .local/
 app/src/main/assets/vosk-model-*
+*_raw_osm.json
 

@@ -20,9 +20,9 @@ from typing import Any, Literal
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 from pydantic import BaseModel, Field, field_validator
@@ -282,6 +282,19 @@ def initialize_database() -> None:
                 updated_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_reports_reported ON reports(reported_at DESC);
+            CREATE TABLE IF NOT EXISTS report_attachments (
+                id TEXT PRIMARY KEY,
+                report_id TEXT NOT NULL REFERENCES reports(report_id) ON DELETE CASCADE,
+                file_name TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                file_size_bytes INTEGER NOT NULL,
+                sha256_hash TEXT NOT NULL,
+                storage_path TEXT NOT NULL,
+                analysis_status TEXT NOT NULL,
+                analysis_summary TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_report_attachments_report_id ON report_attachments(report_id);
             CREATE TABLE IF NOT EXISTS trusted_contact_alerts (
                 alert_id TEXT PRIMARY KEY,
                 event_id TEXT NOT NULL,
@@ -807,6 +820,28 @@ class GoogleAuthResponse(BaseModel):
     role: str = "CITIZEN_USER"
     sessionToken: str
     expiresAt: int
+
+
+class RouteCoordinateModel(BaseModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+
+class RouteAnalyzeRequest(BaseModel):
+    coordinates: list[RouteCoordinateModel] = Field(min_length=2)
+    label: str = Field(default="Candidate Route", max_length=120)
+    mode: str = Field(default="walking", max_length=40)
+
+
+class RouteCandidateModel(BaseModel):
+    id: str = Field(min_length=1, max_length=60)
+    coordinates: list[RouteCoordinateModel] = Field(min_length=2)
+    label: str = Field(default="Candidate Route", max_length=120)
+    mode: str = Field(default="walking", max_length=40)
+
+
+class RouteCompareRequest(BaseModel):
+    routes: list[RouteCandidateModel] = Field(min_length=1, max_length=5)
 
 
 # ---------- Common mappings ----------
@@ -2755,6 +2790,24 @@ def list_reports(
 def report_detail(report_id: str) -> dict[str, Any]:
     report = get_report(report_id)
     if report is None: raise HTTPException(status_code=404, detail="Report not found.")
+    with db() as conn:
+        attachments = conn.execute(
+            "SELECT * FROM report_attachments WHERE report_id = ? ORDER BY created_at ASC", (report_id,)
+        ).fetchall()
+        report["attachments"] = [
+            {
+                "id": a["id"],
+                "reportId": a["report_id"],
+                "fileName": a["file_name"],
+                "mimeType": a["mime_type"],
+                "fileSizeBytes": a["file_size_bytes"],
+                "sha256Hash": a["sha256_hash"],
+                "analysisStatus": a["analysis_status"],
+                "analysisSummary": a["analysis_summary"],
+                "createdAt": a["created_at"],
+            }
+            for a in attachments
+        ]
     return report
 
 
@@ -2770,6 +2823,188 @@ async def update_report_status(report_id: str, payload: ReportStatusUpdate) -> d
     create_audit("CONTROL_ROOM", "REPORT_STATUS_CHANGED", report_id, f"Report status changed to {payload.status}; priority={priority}.", item["isDemo"])
     await manager.broadcast("REPORT_UPDATED", item)
     return item
+
+
+# ---------- Complaint Attachments & Multimodal Intake ----------
+ALLOWED_ATTACHMENT_MIMES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "audio/wav",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/m4a",
+    "audio/ogg",
+    "application/pdf",
+    "text/plain",
+}
+MAX_ATTACHMENT_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB limit
+
+
+@app.post("/api/v1/reports/{report_id}/attachments")
+async def upload_report_attachment(
+    report_id: str,
+    file: UploadFile = File(...),
+    actor: str = Depends(require_any_api_client),
+) -> dict[str, Any]:
+    with db() as conn:
+        rep = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
+        if not rep:
+            raise HTTPException(status_code=404, detail="Incident report not found.")
+
+    content_type = file.content_type or "application/octet-stream"
+    if content_type.lower() not in ALLOWED_ATTACHMENT_MIMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{content_type}'. Allowed types: images (JPEG/PNG/WebP), audio (WAV/MP3/M4A/OGG), PDF, text.",
+        )
+
+    content = await file.read()
+    if len(content) > MAX_ATTACHMENT_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail=f"File exceeds maximum allowed size of 15MB (got {len(content)} bytes).")
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Cannot upload empty file.")
+
+    sha256_hash = hashlib.sha256(content).hexdigest()
+    attachment_id = str(uuid.uuid4())
+
+    attach_dir = DATA_DIR / "attachments" / report_id
+    attach_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", file.filename or "attachment.bin")
+    file_path = attach_dir / f"{attachment_id}_{safe_name}"
+    file_path.write_bytes(content)
+
+    analysis_status = "ANALYSIS_UNAVAILABLE"
+    analysis_summary = "AI multimodal analysis provider not configured on server. Human officer review required."
+
+    if content_type.startswith("image/"):
+        analysis_summary = f"Image attachment received ({len(content)} bytes). Visual evidence flagged for human officer triage."
+        analysis_status = "PENDING_OFFICER_REVIEW"
+    elif content_type.startswith("audio/"):
+        analysis_summary = f"Audio recording received ({len(content)} bytes). Audio evidence flagged for human officer review."
+        analysis_status = "PENDING_OFFICER_REVIEW"
+    elif content_type == "application/pdf":
+        analysis_summary = f"Document/PDF attachment received ({len(content)} bytes). Document flagged for human officer review."
+        analysis_status = "PENDING_OFFICER_REVIEW"
+
+    current = utc_ms()
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO report_attachments (id, report_id, file_name, mime_type, file_size_bytes, sha256_hash, storage_path, analysis_status, analysis_summary, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (attachment_id, report_id, safe_name, content_type, len(content), sha256_hash, str(file_path), analysis_status, analysis_summary, current),
+        )
+
+    is_demo = bool(rep["is_demo"])
+    create_audit(actor, "ATTACHMENT_UPLOADED", report_id, f"Attachment '{safe_name}' ({content_type}, {len(content)} bytes) attached to report.", is_demo)
+    payload = {
+        "id": attachment_id,
+        "reportId": report_id,
+        "fileName": safe_name,
+        "mimeType": content_type,
+        "fileSizeBytes": len(content),
+        "sha256Hash": sha256_hash,
+        "analysisStatus": analysis_status,
+        "analysisSummary": analysis_summary,
+        "createdAt": current,
+    }
+    await manager.broadcast("REPORT_ATTACHMENT_ADDED", payload)
+    return payload
+
+
+@app.get("/api/v1/reports/{report_id}/attachments")
+def list_report_attachments(report_id: str, actor: str = Depends(require_any_api_client)) -> list[dict[str, Any]]:
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM report_attachments WHERE report_id = ? ORDER BY created_at ASC", (report_id,)).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "reportId": r["report_id"],
+                "fileName": r["file_name"],
+                "mimeType": r["mime_type"],
+                "fileSizeBytes": r["file_size_bytes"],
+                "sha256Hash": r["sha256_hash"],
+                "analysisStatus": r["analysis_status"],
+                "analysisSummary": r["analysis_summary"],
+                "createdAt": r["created_at"],
+            }
+            for r in rows
+        ]
+
+
+@app.get("/api/v1/reports/{report_id}/attachments/{attachment_id}/download")
+def download_report_attachment(
+    report_id: str,
+    attachment_id: str,
+    actor: str = Depends(require_any_api_client),
+):
+    with db() as conn:
+        row = conn.execute("SELECT * FROM report_attachments WHERE id = ? AND report_id = ?", (attachment_id, report_id)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Attachment not found.")
+        path = Path(row["storage_path"])
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Attachment file missing from storage.")
+        return FileResponse(
+            path=str(path),
+            media_type=row["mime_type"],
+            filename=row["file_name"],
+        )
+
+
+# ---------- Nagpur Route Context & Safety Scoring Endpoints ----------
+@app.post("/api/v1/routes/analyze", dependencies=[Depends(require_any_api_client)])
+def analyze_route_endpoint(payload: RouteAnalyzeRequest) -> dict[str, Any]:
+    from backend.app.route_scoring import get_nagpur_route_safety_engine
+    engine = get_nagpur_route_safety_engine()
+    coords = [(c.latitude, c.longitude) for c in payload.coordinates]
+    return engine.analyze_route(coords, label=payload.label, mode=payload.mode)
+
+
+@app.post("/api/v1/routes/compare", dependencies=[Depends(require_any_api_client)])
+def compare_routes_endpoint(payload: RouteCompareRequest) -> dict[str, Any]:
+    from backend.app.route_scoring import get_nagpur_route_safety_engine
+    engine = get_nagpur_route_safety_engine()
+    routes_data = [
+        {
+            "id": r.id,
+            "coordinates": [(c.latitude, c.longitude) for c in r.coordinates],
+            "label": r.label,
+            "mode": r.mode,
+        }
+        for r in payload.routes
+    ]
+    return engine.compare_routes(routes_data)
+
+
+@app.get("/api/v1/routes/layers/summary", dependencies=[Depends(require_any_api_client)])
+def route_layers_summary_endpoint() -> dict[str, Any]:
+    from backend.app.route_scoring import get_nagpur_route_safety_engine
+    engine = get_nagpur_route_safety_engine()
+    return {
+        "status": "LOADED" if engine.loaded else "UNINITIALIZED",
+        "counts": {
+            "blackspots": len(engine.blackspots),
+            "facilities": len(engine.facilities),
+            "greenPolygons": len(engine.green_polygons),
+            "roadFeatures": len(engine.roads_lighting),
+        },
+        "bbox": [20.95, 78.70, 21.35, 79.40],
+        "bboxNote": "Nagpur city plus peri-urban planning bbox (20.95, 78.70 to 21.35, 79.40); not an official municipal boundary.",
+        "sources": [
+            "Maharashtra Highway Traffic Police 2021-2023 National Highway Blackspots",
+            "OpenStreetMap contributors (ODbL 1.0; attribution required)",
+        ],
+        "limitations": [
+            "Missing OSM lighting tags represent unknown lighting, not proven absence of streetlights.",
+            "Woodland and parks are environmental context; they do not indicate crime or danger.",
+            "Facility proximity is a support/access proxy, not proof a place is currently staffed or open.",
+            "Historical accident blackspots are vehicle crash records, not personal crime data.",
+            "No official police dispatch is implied.",
+        ],
+        "dataFreshness": engine.extraction_metadata.get("generated_at_utc", "2026-10-16T23:08:53+00:00"),
+    }
+
 
 
 @app.get("/api/v1/dispatches", dependencies=[Depends(require_dashboard)])

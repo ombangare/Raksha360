@@ -79,6 +79,7 @@ import com.example.ui.theme.EvidenceOrange
 import com.example.ui.theme.NavyDark
 import com.example.ui.theme.SafeGreen
 import com.example.ui.theme.ShieldBlue
+import com.example.service.location.LocationStatus
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextSecondary
 import com.example.ui.viewmodel.MainViewModel
@@ -109,7 +110,7 @@ fun NagpurSafetyMapScreen(
     val activeUserCoordinates = if (hasFineLocation && rawLocation.latitude != 0.0) {
         GeoCoordinates(rawLocation.latitude, rawLocation.longitude)
     } else {
-        NagpurGeoConfig.SADAR_PILOT_CENTER
+        NagpurGeoConfig.NAGPUR_CENTER
     }
     val isLocationFallback = !hasFineLocation || rawLocation.latitude == 0.0
 
@@ -436,7 +437,7 @@ fun NagpurSafetyMapScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Recenter on Sadar Pilot Area Button
+            // Recenter Map Button
             Box(
                 modifier = Modifier
                     .size(44.dp)
@@ -445,14 +446,15 @@ fun NagpurSafetyMapScreen(
                     .border(1.dp, Color(0xFFCBD5E1), CircleShape)
                     .clickable {
                         mapViewInstance?.let {
-                            viewModel.mapProvider.updateCenter(it, NagpurGeoConfig.SADAR_PILOT_CENTER, 15.0)
+                            val target = if (!isLocationFallback) activeUserCoordinates else NagpurGeoConfig.NAGPUR_CENTER
+                            viewModel.mapProvider.updateCenter(it, target, 15.0)
                         }
                     },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Default.Place,
-                    contentDescription = "Recenter Sadar",
+                    contentDescription = "Recenter Map",
                     tint = ShieldBlue,
                     modifier = Modifier.size(22.dp)
                 )
@@ -547,8 +549,16 @@ fun NagpurSafetyMapScreen(
                         Spacer(modifier = Modifier.width(12.dp))
 
                         Column {
+                            val mapLocationTitle = when (rawLocation.status) {
+                                LocationStatus.ACTIVE_GPS -> rawLocation.description.ifBlank { "Nagpur, Maharashtra" }
+                                LocationStatus.DEMO_MODE -> "Nagpur (Demo Simulation)"
+                                LocationStatus.PERMISSION_DENIED -> "Location Permission Denied"
+                                LocationStatus.GPS_DISABLED -> "Device GPS Disabled"
+                                LocationStatus.STALE -> rawLocation.description.ifBlank { "Last Known Location" }
+                                else -> "Nagpur Safety Map"
+                            }
                             Text(
-                                text = "Sadar, Nagpur (Pilot Area)",
+                                text = mapLocationTitle,
                                 style = MaterialTheme.typography.titleMedium.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = NavyDark,
@@ -565,7 +575,7 @@ fun NagpurSafetyMapScreen(
                             )
                             if (isLocationFallback) {
                                 Text(
-                                    text = "● Device GPS offline: Centered on Sadar fallback location",
+                                    text = "● Device GPS offline: Centered on Nagpur reference coordinates",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         color = Color(0xFFD97706),
                                         fontSize = 10.sp
@@ -578,7 +588,11 @@ fun NagpurSafetyMapScreen(
                     // External Navigation Intent
                     IconButton(
                         onClick = {
-                            val uri = Uri.parse("geo:21.1612,79.0825?q=Sadar+Nagpur")
+                            val uri = if (!isLocationFallback && activeUserCoordinates.latitude != 0.0) {
+                                Uri.parse("geo:${activeUserCoordinates.latitude},${activeUserCoordinates.longitude}?q=${activeUserCoordinates.latitude},${activeUserCoordinates.longitude}")
+                            } else {
+                                Uri.parse("geo:21.1458,79.0882?q=Nagpur")
+                            }
                             context.startActivity(Intent(Intent.ACTION_VIEW, uri))
                         }
                     ) {
@@ -734,7 +748,7 @@ fun NagpurSafetyMapScreen(
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Text(
-                        text = "Start Journey (Sadar → Destination)",
+                        text = "Start Safe Journey",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp

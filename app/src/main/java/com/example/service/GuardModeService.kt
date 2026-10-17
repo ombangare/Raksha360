@@ -80,6 +80,8 @@ class GuardModeService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO)
     private var listeningJob: Job? = null
     private var audioRecord: AudioRecord? = null
+    private var shakeDetector: com.example.voice.sensor.ShakeDetector? = null
+    private var shakeSettingsJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -131,6 +133,43 @@ class GuardModeService : Service() {
         if (hasLocationPermission) {
             app.locationManager.startLocationUpdates(minTimeMs = 30_000L, minDistanceM = 15f)
         }
+
+        // Start reactive Shake SOS sensor monitoring
+        shakeSettingsJob?.cancel()
+        shakeSettingsJob = serviceScope.launch {
+            app.settingsRepo.isShakeSosEnabled.collect { enabled ->
+                if (enabled) {
+                    if (shakeDetector == null) {
+                        val shake = com.example.voice.sensor.ShakeDetector(applicationContext) {
+                            val appInstance = NaariKavachApp.instance
+                            EmergencyOrchestrator.triggerEmergency(
+                                context = applicationContext,
+                                emergencyRepo = appInstance.emergencyRepo,
+                                locationManager = appInstance.locationManager,
+                                audioRecorder = appInstance.incidentAudioRecorder,
+                                evidenceRepo = appInstance.evidenceRepo,
+                                auditRepo = appInstance.auditLogRepo,
+                                settingsRepo = appInstance.settingsRepo,
+                                scope = appInstance.applicationScope,
+                                triggerType = "SHAKE_SOS"
+                            )
+                        }
+                        shake.sensitivity = app.settingsRepo.shakeSensitivity.value
+                        shake.start()
+                        shakeDetector = shake
+                    }
+                } else {
+                    shakeDetector?.stop()
+                    shakeDetector = null
+                }
+            }
+        }
+        serviceScope.launch {
+            app.settingsRepo.shakeSensitivity.collect { sens ->
+                shakeDetector?.sensitivity = sens
+            }
+        }
+
         startAudioListeningLoop()
     }
 
@@ -144,6 +183,10 @@ class GuardModeService : Service() {
 
         listeningJob?.cancel()
         cleanupAudioRecord()
+        shakeSettingsJob?.cancel()
+        shakeSettingsJob = null
+        shakeDetector?.stop()
+        shakeDetector = null
         serviceScope.launch {
             val locationSessionStillActive = app.settingsRepo.isJourneyActive.value ||
                 com.example.service.location.ForegroundLocationService.isLiveLocationActive.value ||
@@ -321,6 +364,10 @@ class GuardModeService : Service() {
         isServiceRunning = false
         listeningJob?.cancel()
         cleanupAudioRecord()
+        shakeSettingsJob?.cancel()
+        shakeSettingsJob = null
+        shakeDetector?.stop()
+        shakeDetector = null
         val app = NaariKavachApp.instance
         if (!app.settingsRepo.isJourneyActive.value && !com.example.service.location.ForegroundLocationService.isLiveLocationActive.value) {
             serviceScope.launch { if (app.emergencyRepo.activeEmergency.first() == null) app.locationManager.stopLocationUpdates() }

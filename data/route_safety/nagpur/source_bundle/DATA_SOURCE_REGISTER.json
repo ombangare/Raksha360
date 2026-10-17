@@ -1,0 +1,41 @@
+{
+  "generated_on": "2026-10-17",
+  "area": "Nagpur urban + peri-urban route window; not an official boundary",
+  "sources": [
+    {
+      "name": "Maharashtra Highway Traffic Police national highway blackspots 2021-2023",
+      "use": "Historical accident exposure points",
+      "status": "Five Nagpur City points already extracted in sibling CSV/GeoJSON",
+      "limits": "Not crime data; not a complete city-wide safety history"
+    },
+    {
+      "name": "OpenStreetMap / Overpass API",
+      "url": "https://overpass-turbo.eu/",
+      "use": "Facilities, parks/woods/scrub, residential/commercial context, roads and explicitly mapped lights/sidewalks",
+      "status": "Live extractor and query created; must be run on an internet-enabled machine",
+      "limits": "Crowd-maintained/incomplete; missing tags unknown; ODbL attribution required"
+    },
+    {
+      "name": "Smart Lights: Nagpur — OGD India",
+      "url": "https://ap.data.gov.in/catalog/smart-lights-nagpur",
+      "resource_url": "https://kerala.data.gov.in/resource/smart-lights-nagpur-jan-2019",
+      "use": "Possible streetlight asset baseline",
+      "status": "Catalogue published/updated in 2019; child resource says as of Jan 2019; actual coordinate data not verified in this bundle",
+      "limits": "Do not treat as current or operational lighting data"
+    },
+    {
+      "name": "MRSAC/NIT-NMRDA GIS project page",
+      "url": "https://mrsac.gov.in/MRSAC/flipbook/project/implementation-of-geographic-information-system-for-nagpur-improvement-trust-nit-ndash-nmrda",
+      "use": "Potential authoritative detailed land-use layer lead",
+      "status": "Project description found; no downloadable city layer verified",
+      "limits": "Do not claim the dataset was obtained"
+    },
+    {
+      "name": "District Nagpur government land use pattern",
+      "url": "https://nagpur.gov.in/economy/",
+      "use": "District-level context only",
+      "status": "Official page reports aggregate district forest area; not a route-level layer",
+      "limits": "Do not use the aggregate total to infer that a particular road is forested"
+    }
+  ]
+}

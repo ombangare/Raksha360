@@ -10,6 +10,16 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+enum class LocationStatus {
+    ACTIVE_GPS,
+    ACQUIRING,
+    PERMISSION_DENIED,
+    GPS_DISABLED,
+    STALE,
+    DEMO_MODE,
+    UNAVAILABLE
+}
+
 data class UserLocation(
     val latitude: Double,
     val longitude: Double,
@@ -17,13 +27,17 @@ data class UserLocation(
     val speed: Float,
     val timestamp: Long,
     val isFallback: Boolean = false,
-    val description: String = "Sadar, Nagpur"
+    val description: String = "Location unavailable",
+    val status: LocationStatus = LocationStatus.ACQUIRING,
+    val provenance: String = "UNAVAILABLE"
 )
 
 class AppLocationManager(private val context: Context) {
 
     companion object {
-        // Nagpur Sadar coordinates
+        // Nagpur center reference coordinates for isolated demo simulation only
+        const val NAGPUR_CENTER_LAT = 21.1458
+        const val NAGPUR_CENTER_LNG = 79.0882
         const val SADAR_NAGPUR_LAT = 21.1612
         const val SADAR_NAGPUR_LNG = 79.0825
     }
@@ -32,13 +46,15 @@ class AppLocationManager(private val context: Context) {
 
     private val _currentLocation = MutableStateFlow(
         UserLocation(
-            latitude = SADAR_NAGPUR_LAT,
-            longitude = SADAR_NAGPUR_LNG,
-            accuracy = 12.0f,
+            latitude = 0.0,
+            longitude = 0.0,
+            accuracy = 0.0f,
             speed = 0f,
             timestamp = System.currentTimeMillis(),
             isFallback = true,
-            description = "Sadar, Nagpur (Default)"
+            description = "Acquiring GPS fix…",
+            status = LocationStatus.ACQUIRING,
+            provenance = "UNAVAILABLE"
         )
     )
     val currentLocation: StateFlow<UserLocation> = _currentLocation.asStateFlow()
@@ -56,8 +72,32 @@ class AppLocationManager(private val context: Context) {
         }
     }
 
+    fun applyDemoLocation() {
+        _currentLocation.value = UserLocation(
+            latitude = SADAR_NAGPUR_LAT,
+            longitude = SADAR_NAGPUR_LNG,
+            accuracy = 15.0f,
+            speed = 0f,
+            timestamp = System.currentTimeMillis(),
+            isFallback = true,
+            description = "Demo Mode • Nagpur (Simulation)",
+            status = LocationStatus.DEMO_MODE,
+            provenance = "DEMO_SIMULATION"
+        )
+    }
+
+    fun onPermissionDenied() {
+        if (_currentLocation.value.status != LocationStatus.ACTIVE_GPS) {
+            _currentLocation.value = _currentLocation.value.copy(
+                status = LocationStatus.PERMISSION_DENIED,
+                description = "Location Permission Required"
+            )
+        }
+    }
+
     private val locationListener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
+            val isGps = location.provider?.equals(AndroidLocationManager.GPS_PROVIDER, ignoreCase = true) == true
             _currentLocation.value = UserLocation(
                 latitude = location.latitude,
                 longitude = location.longitude,
@@ -65,7 +105,9 @@ class AppLocationManager(private val context: Context) {
                 speed = location.speed,
                 timestamp = location.time,
                 isFallback = false,
-                description = "Lat: ${String.format("%.4f", location.latitude)}, Lng: ${String.format("%.4f", location.longitude)}"
+                description = "Nagpur • Lat ${String.format("%.4f", location.latitude)}, Lng ${String.format("%.4f", location.longitude)} (±${location.accuracy.toInt()}m)",
+                status = LocationStatus.ACTIVE_GPS,
+                provenance = if (isGps) "GPS_HARDWARE" else "NETWORK_PROVIDER"
             )
         }
 
@@ -75,6 +117,12 @@ class AppLocationManager(private val context: Context) {
 
         override fun onProviderDisabled(provider: String) {
             _isLocationEnabled.value = isGpsEnabled()
+            if (!isGpsEnabled() && _currentLocation.value.status != LocationStatus.DEMO_MODE) {
+                _currentLocation.value = _currentLocation.value.copy(
+                    status = LocationStatus.GPS_DISABLED,
+                    description = "Device GPS Disabled"
+                )
+            }
         }
 
         @Deprecated("Deprecated in Java")
@@ -92,14 +140,20 @@ class AppLocationManager(private val context: Context) {
             val lastNet = lm.getLastKnownLocation(AndroidLocationManager.NETWORK_PROVIDER)
             val bestLast = lastGps ?: lastNet
             if (bestLast != null) {
+                val ageMs = System.currentTimeMillis() - bestLast.time
+                val isStale = ageMs > 120_000L
+                val isGps = bestLast.provider?.equals(AndroidLocationManager.GPS_PROVIDER, ignoreCase = true) == true
                 _currentLocation.value = UserLocation(
                     latitude = bestLast.latitude,
                     longitude = bestLast.longitude,
                     accuracy = bestLast.accuracy,
                     speed = bestLast.speed,
                     timestamp = bestLast.time,
-                    isFallback = false,
-                    description = "Nagpur (Lat: ${String.format("%.4f", bestLast.latitude)}, Lng: ${String.format("%.4f", bestLast.longitude)})"
+                    isFallback = isStale,
+                    description = if (isStale) "Nagpur • Last known fix (${ageMs / 60_000}m ago)"
+                                  else "Nagpur • Lat ${String.format("%.4f", bestLast.latitude)}, Lng ${String.format("%.4f", bestLast.longitude)}",
+                    status = if (isStale) LocationStatus.STALE else LocationStatus.ACTIVE_GPS,
+                    provenance = if (isGps) "GPS_HARDWARE" else "NETWORK_PROVIDER"
                 )
             }
 

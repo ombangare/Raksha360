@@ -54,7 +54,7 @@ class VoiceProfileRepository(
         try {
             val json = JSONObject(decrypted)
             val phrase = json.optString("phrase", DEFAULT_PHRASE)
-            val threshold = json.optDouble("threshold", 0.82).toFloat()
+            val threshold = json.optDouble("threshold", 0.72).toFloat()
             val enrolledAt = json.optLong("enrolledAt", 0L)
             val sampleCount = json.optInt("sampleCount", 3)
             val embArray = json.optJSONArray("embedding") ?: JSONArray()
@@ -80,7 +80,7 @@ class VoiceProfileRepository(
         phrase: String,
         embedding: FloatArray,
         sampleCount: Int,
-        threshold: Float = 0.82f
+        threshold: Float = 0.72f
     ): Boolean {
         return try {
             val json = JSONObject().apply {

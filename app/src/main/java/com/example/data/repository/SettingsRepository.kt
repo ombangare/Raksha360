@@ -26,6 +26,13 @@ class SettingsRepository(context: Context) {
     private val _offlineLocationEmailConsent = MutableStateFlow(prefs.getBoolean("offline_location_email_consent", false))
     val offlineLocationEmailConsent: StateFlow<Boolean> = _offlineLocationEmailConsent.asStateFlow()
 
+    // Physical Gesture (Shake SOS) detection
+    private val _isShakeSosEnabled = MutableStateFlow(prefs.getBoolean("shake_sos_enabled", false))
+    val isShakeSosEnabled: StateFlow<Boolean> = _isShakeSosEnabled.asStateFlow()
+
+    private val _shakeSensitivity = MutableStateFlow(prefs.getString("shake_sensitivity", "MEDIUM") ?: "MEDIUM")
+    val shakeSensitivity: StateFlow<String> = _shakeSensitivity.asStateFlow()
+
     companion object {
         val DEFAULT_API_URL: String = com.example.BuildConfig.DEFAULT_API_BASE_URL
     }
@@ -101,6 +108,17 @@ class SettingsRepository(context: Context) {
     fun setOfflineLocationEmailConsent(enabled: Boolean) {
         prefs.edit().putBoolean("offline_location_email_consent", enabled).apply()
         _offlineLocationEmailConsent.value = enabled
+    }
+
+    fun setShakeSosEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("shake_sos_enabled", enabled).apply()
+        _isShakeSosEnabled.value = enabled
+    }
+
+    fun setShakeSensitivity(sensitivity: String) {
+        val normalized = sensitivity.uppercase()
+        prefs.edit().putString("shake_sensitivity", normalized).apply()
+        _shakeSensitivity.value = normalized
     }
 
     fun setPoliceEndpointConfig(configured: Boolean, url: String, token: String) {

@@ -39,19 +39,26 @@ object EmergencyOrchestrator {
     ) {
         scope.launch(Dispatchers.IO) {
             val loc = locationManager.currentLocation.value
-            if (triggerType == "VOICE_SOS") {
-                auditRepo.logVoiceSosActivation(
-                    verifiedPhrase = phrase,
-                    speakerScore = speakerScore,
-                    threshold = 0.82f,
-                    locationSector = loc.description
-                )
-            } else if (triggerType == "CHILD_SOS") {
-                auditRepo.log("CHILD_SOS_EVENT_CREATED", "Child safety emergency event created", "CRITICAL")
-            } else {
-                auditRepo.logManualPanicActivation(
-                    locationSector = loc.description
-                )
+            when (triggerType) {
+                "VOICE_SOS" -> {
+                    auditRepo.logVoiceSosActivation(
+                        verifiedPhrase = phrase,
+                        speakerScore = speakerScore,
+                        threshold = 0.72f,
+                        locationSector = loc.description
+                    )
+                }
+                "CHILD_SOS" -> {
+                    auditRepo.log("CHILD_SOS_EVENT_CREATED", "Child safety emergency event created", "CRITICAL")
+                }
+                "SHAKE_SOS" -> {
+                    auditRepo.log("SHAKE_SOS_ACTIVATION", "Emergency triggered via physical device shake detection", "CRITICAL", "EMERGENCY")
+                }
+                else -> {
+                    auditRepo.logManualPanicActivation(
+                        locationSector = loc.description
+                    )
+                }
             }
 
             // 1. Create and dispatch emergency in repository

@@ -85,7 +85,7 @@ class ForegroundLocationService : Service() {
                 speed = location.speed,
                 timestamp = location.time,
                 isFallback = false,
-                description = "Sadar, Nagpur (Lat ${String.format("%.4f", location.latitude)}, Lng ${String.format("%.4f", location.longitude)})"
+                description = "Nagpur • Lat ${String.format("%.4f", location.latitude)}, Lng ${String.format("%.4f", location.longitude)}"
             )
             _lastDispatchedLocation.value = loc
             updateNotification(loc)
@@ -234,7 +234,7 @@ class ForegroundLocationService : Service() {
 
         val title = if (sessionType == "EMERGENCY") "Live Emergency Location Sharing Active" else "Journey Safety Location Sharing"
         val coordText = if (loc != null) {
-            "Sadar, Nagpur • Lat ${String.format("%.4f", loc.latitude)}, Lng ${String.format("%.4f", loc.longitude)}"
+            "Nagpur • Lat ${String.format("%.4f", loc.latitude)}, Lng ${String.format("%.4f", loc.longitude)}"
         } else {
             "Sharing live GPS breadcrumbs with trusted contacts & control room"
         }

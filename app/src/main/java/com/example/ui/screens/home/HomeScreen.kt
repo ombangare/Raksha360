@@ -88,6 +88,7 @@ import com.example.ui.theme.SafeGreen
 import com.example.ui.theme.ShieldBlue
 import coil.compose.AsyncImage
 import androidx.compose.ui.layout.ContentScale
+import com.example.service.location.LocationStatus
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextSecondary
 import com.example.ui.viewmodel.MainViewModel
@@ -221,11 +222,48 @@ fun HomeScreen(
         Spacer(modifier = Modifier.height(18.dp))
 
         // 2. Current Location Card - Dynamic and Honest Location
-        val isFallbackLocation = currentLocation.isFallback || currentLocation.latitude == 0.0
-        val locationTitle = if (isFallbackLocation) "Sadar, Nagpur (Estimated)" else currentLocation.description.ifBlank { "Nagpur, Maharashtra" }
-        val locationSubtitle = if (isFallbackLocation) "Baseline public infrastructure • GPS signal inactive" else "Live device coordinates verified • Accuracy ±${currentLocation.accuracy.toInt()}m"
-        val badgeLabel = if (isFallbackLocation) "Pilot Area" else "GPS Active"
-        val badgeColor = if (isFallbackLocation) Color(0xFFD97706) else SafeGreen
+        val locationTitle: String
+        val locationSubtitle: String
+        val badgeLabel: String
+        val badgeColor: Color
+        when (currentLocation.status) {
+            LocationStatus.ACTIVE_GPS -> {
+                locationTitle = currentLocation.description.ifBlank { "Nagpur, Maharashtra" }
+                locationSubtitle = "Live device coordinates verified • Accuracy ±${currentLocation.accuracy.toInt()}m"
+                badgeLabel = "GPS Active"
+                badgeColor = SafeGreen
+            }
+            LocationStatus.DEMO_MODE -> {
+                locationTitle = "Nagpur (Demo Simulation)"
+                locationSubtitle = "Simulated coordinates active • Testing mode only"
+                badgeLabel = "Demo Mode"
+                badgeColor = Color(0xFFD97706)
+            }
+            LocationStatus.PERMISSION_DENIED -> {
+                locationTitle = "Location Permission Required"
+                locationSubtitle = "Grant location permission to enable real-time safety monitoring"
+                badgeLabel = "Permission Required"
+                badgeColor = EmergencyRed
+            }
+            LocationStatus.GPS_DISABLED -> {
+                locationTitle = "Device GPS Disabled"
+                locationSubtitle = "Please turn on location services in device settings"
+                badgeLabel = "GPS Off"
+                badgeColor = Color(0xFFD97706)
+            }
+            LocationStatus.STALE -> {
+                locationTitle = currentLocation.description.ifBlank { "Last known location" }
+                locationSubtitle = "GPS signal lost • Showing last verified fix"
+                badgeLabel = "Stale Fix"
+                badgeColor = Color(0xFFD97706)
+            }
+            LocationStatus.ACQUIRING, LocationStatus.UNAVAILABLE -> {
+                locationTitle = "Acquiring GPS fix…"
+                locationSubtitle = "Searching for satellite signals • Hold device in open area"
+                badgeLabel = "Searching"
+                badgeColor = ShieldBlue
+            }
+        }
 
         Card(
             modifier = Modifier
