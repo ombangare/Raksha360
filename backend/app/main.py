@@ -11,6 +11,7 @@ import re
 import secrets
 import smtplib
 import sqlite3
+import time
 import uuid
 from email.message import EmailMessage
 from contextlib import asynccontextmanager, contextmanager
@@ -2362,6 +2363,9 @@ async def receive_trusted_contact_alert(
 # ---------- ElevenLabs Assistant Signed-URL Credentials Endpoint ----------
 @app.get("/api/v1/assistant/session", dependencies=[Depends(require_any_api_client)])
 async def get_assistant_session() -> dict[str, Any]:
+    correlation_id = str(uuid.uuid4())[:8]
+    t0 = time.perf_counter()
+
     raw_agent_id = (
         os.getenv("ELEVENLABS_AGENT_ID")
         or os.getenv("ELEVEN_LABS_AGENT_ID")
@@ -2378,12 +2382,18 @@ async def get_assistant_session() -> dict[str, Any]:
     api_key = raw_api_key.strip().strip("\"' \t\r\n")
 
     diagnostics = {
+        "correlationId": correlation_id,
         "apiKeyPresent": bool(api_key),
         "agentIdPresent": bool(agent_id),
         "agentId": agent_id,
+        "stage": "INIT",
     }
 
     if not api_key:
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        diagnostics["stage"] = "CONFIG_CHECK"
+        diagnostics["elapsedMs"] = elapsed_ms
+        logger.info("ElevenLabs session request [corr=%s]: stage=CONFIG_CHECK status=MISSING_CREDENTIALS elapsed=%dms", correlation_id, elapsed_ms)
         return {
             "configured": False,
             "agentId": agent_id,
@@ -2393,15 +2403,22 @@ async def get_assistant_session() -> dict[str, Any]:
             "message": "ElevenLabs API key is not configured on the backend server. Set ELEVENLABS_API_KEY in Render environment.",
             "diagnostics": diagnostics,
         }
+
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        diagnostics["stage"] = "OUTBOUND_REQUEST"
+        async with httpx.AsyncClient(timeout=10.0) as client:
             res = await client.get(
                 "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url",
                 params={"agent_id": agent_id},
                 headers={"xi-api-key": api_key},
             )
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            diagnostics["elapsedMs"] = elapsed_ms
+
             if res.status_code == 200:
                 data = res.json()
+                diagnostics["stage"] = "TOKEN_ACQUIRED"
+                logger.info("ElevenLabs session request [corr=%s]: stage=TOKEN_ACQUIRED status=200 elapsed=%dms", correlation_id, elapsed_ms)
                 return {
                     "configured": True,
                     "agentId": agent_id,
@@ -2410,11 +2427,12 @@ async def get_assistant_session() -> dict[str, Any]:
                     "diagnostics": diagnostics,
                 }
             elif res.status_code in (401, 403):
-                logger.warning("ElevenLabs signed URL auth failed: HTTP %s", res.status_code)
+                diagnostics["stage"] = "UPSTREAM_AUTH_FAILED"
+                logger.warning("ElevenLabs signed URL auth failed [corr=%s]: HTTP %s elapsed=%dms", correlation_id, res.status_code, elapsed_ms)
                 error_msg = (
-                    "Upstream ElevenLabs authentication rejected (HTTP 401). Please verify that the ELEVENLABS_API_KEY in Render is valid and active."
+                    "Upstream ElevenLabs authentication rejected (HTTP 401). Please verify that the ELEVENLABS_API_KEY in Render is valid, active, and has Conversational AI permissions."
                     if res.status_code == 401
-                    else "Upstream ElevenLabs access forbidden (HTTP 403). Check agent permissions."
+                    else "Upstream ElevenLabs access forbidden (HTTP 403). Check agent permissions and workspace membership."
                 )
                 return {
                     "configured": False,
@@ -2428,8 +2446,9 @@ async def get_assistant_session() -> dict[str, Any]:
                     "diagnostics": diagnostics,
                 }
             elif res.status_code == 404:
-                logger.warning("ElevenLabs agent not found: %s", agent_id)
-                error_msg = f"ElevenLabs agent '{agent_id}' was not found (HTTP 404). Please verify ELEVENLABS_AGENT_ID."
+                diagnostics["stage"] = "UPSTREAM_AGENT_NOT_FOUND"
+                logger.warning("ElevenLabs agent not found [corr=%s]: %s", correlation_id, agent_id)
+                error_msg = f"ElevenLabs agent '{agent_id}' was not found (HTTP 404). Please verify ELEVENLABS_AGENT_ID matches an agent in your ElevenLabs workspace."
                 return {
                     "configured": False,
                     "agentId": agent_id,
@@ -2442,7 +2461,8 @@ async def get_assistant_session() -> dict[str, Any]:
                     "diagnostics": diagnostics,
                 }
             else:
-                logger.warning("ElevenLabs signed URL request failed: HTTP %s", res.status_code)
+                diagnostics["stage"] = "UPSTREAM_ERROR"
+                logger.warning("ElevenLabs signed URL request failed [corr=%s]: HTTP %s", correlation_id, res.status_code)
                 error_msg = f"ElevenLabs API returned HTTP {res.status_code}."
                 return {
                     "configured": False,
@@ -2456,7 +2476,10 @@ async def get_assistant_session() -> dict[str, Any]:
                     "diagnostics": diagnostics,
                 }
     except httpx.TimeoutException as exc:
-        logger.warning("ElevenLabs signed URL timeout: %s", exc)
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        diagnostics["stage"] = "TIMEOUT"
+        diagnostics["elapsedMs"] = elapsed_ms
+        logger.warning("ElevenLabs signed URL timeout [corr=%s]: %s", correlation_id, exc)
         return {
             "configured": False,
             "agentId": agent_id,
@@ -2468,7 +2491,10 @@ async def get_assistant_session() -> dict[str, Any]:
             "diagnostics": diagnostics,
         }
     except Exception as exc:
-        logger.error("ElevenLabs signed URL exception: %s", exc)
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        diagnostics["stage"] = "EXCEPTION"
+        diagnostics["elapsedMs"] = elapsed_ms
+        logger.error("ElevenLabs signed URL exception [corr=%s]: %s", correlation_id, exc)
         return {
             "configured": False,
             "agentId": agent_id,
@@ -2847,10 +2873,20 @@ async def upload_report_attachment(
     file: UploadFile = File(...),
     actor: str = Depends(require_any_api_client),
 ) -> dict[str, Any]:
+    from backend.app.storage import get_storage_provider
+
     with db() as conn:
         rep = conn.execute("SELECT * FROM reports WHERE report_id = ?", (report_id,)).fetchone()
         if not rep:
             raise HTTPException(status_code=404, detail="Incident report not found.")
+
+    storage = get_storage_provider(DATA_DIR)
+    is_prod = os.getenv("RAKSHA360_ENV", os.getenv("ENVIRONMENT", "development")).strip().lower() in ("production", "prod")
+    if is_prod and not storage.is_durable():
+        raise HTTPException(
+            status_code=503,
+            detail="Attachment uploads are disabled in production because durable cloud object storage (S3/R2/Supabase) is not configured. Configure S3_BUCKET_NAME in Render environment.",
+        )
 
     content_type = file.content_type or "application/octet-stream"
     if content_type.lower() not in ALLOWED_ATTACHMENT_MIMES:
@@ -2867,12 +2903,10 @@ async def upload_report_attachment(
 
     sha256_hash = hashlib.sha256(content).hexdigest()
     attachment_id = str(uuid.uuid4())
-
-    attach_dir = DATA_DIR / "attachments" / report_id
-    attach_dir.mkdir(parents=True, exist_ok=True)
     safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", file.filename or "attachment.bin")
-    file_path = attach_dir / f"{attachment_id}_{safe_name}"
-    file_path.write_bytes(content)
+
+    # Save via storage provider
+    storage_path = storage.save(report_id, attachment_id, safe_name, content)
 
     analysis_status = "ANALYSIS_UNAVAILABLE"
     analysis_summary = "AI multimodal analysis provider not configured on server. Human officer review required."
@@ -2888,12 +2922,18 @@ async def upload_report_attachment(
         analysis_status = "PENDING_OFFICER_REVIEW"
 
     current = utc_ms()
-    with db() as conn:
-        conn.execute(
-            """INSERT INTO report_attachments (id, report_id, file_name, mime_type, file_size_bytes, sha256_hash, storage_path, analysis_status, analysis_summary, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (attachment_id, report_id, safe_name, content_type, len(content), sha256_hash, str(file_path), analysis_status, analysis_summary, current),
-        )
+    try:
+        with db() as conn:
+            conn.execute(
+                """INSERT INTO report_attachments (id, report_id, file_name, mime_type, file_size_bytes, sha256_hash, storage_path, analysis_status, analysis_summary, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (attachment_id, report_id, safe_name, content_type, len(content), sha256_hash, str(storage_path), analysis_status, analysis_summary, current),
+            )
+    except Exception as exc:
+        # Prevent orphaned storage file on database insert failure
+        storage.delete(storage_path)
+        logger.error("Failed to insert attachment record into DB, cleaned up file: %s", exc)
+        raise HTTPException(status_code=500, detail="Database failure while storing attachment metadata.") from exc
 
     is_demo = bool(rep["is_demo"])
     create_audit(actor, "ATTACHMENT_UPLOADED", report_id, f"Attachment '{safe_name}' ({content_type}, {len(content)} bytes) attached to report.", is_demo)
@@ -2938,18 +2978,31 @@ def download_report_attachment(
     attachment_id: str,
     actor: str = Depends(require_any_api_client),
 ):
+    from backend.app.storage import get_storage_provider
+
     with db() as conn:
         row = conn.execute("SELECT * FROM report_attachments WHERE id = ? AND report_id = ?", (attachment_id, report_id)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Attachment not found.")
-        path = Path(row["storage_path"])
-        if not path.is_file():
+
+        storage = get_storage_provider(DATA_DIR)
+        local_path = storage.get_path(row["storage_path"])
+        if local_path and local_path.is_file():
+            return FileResponse(
+                path=str(local_path),
+                media_type=row["mime_type"],
+                filename=row["file_name"],
+            )
+
+        try:
+            file_bytes = storage.read(row["storage_path"])
+            return Response(
+                content=file_bytes,
+                media_type=row["mime_type"],
+                headers={"Content-Disposition": f'attachment; filename="{row["file_name"]}"'},
+            )
+        except Exception:
             raise HTTPException(status_code=404, detail="Attachment file missing from storage.")
-        return FileResponse(
-            path=str(path),
-            media_type=row["mime_type"],
-            filename=row["file_name"],
-        )
 
 
 # ---------- Nagpur Route Context & Safety Scoring Endpoints ----------
