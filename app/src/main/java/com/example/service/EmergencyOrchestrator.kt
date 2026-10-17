@@ -39,13 +39,26 @@ object EmergencyOrchestrator {
     ) {
         scope.launch(Dispatchers.IO) {
             val loc = locationManager.currentLocation.value
+            val hasValidFix = !loc.isFallback &&
+                loc.status == com.example.service.location.LocationStatus.ACTIVE_GPS &&
+                loc.latitude in -90.0..90.0 &&
+                loc.longitude in -180.0..180.0 &&
+                (loc.latitude != 0.0 || loc.longitude != 0.0) &&
+                !(loc.latitude == com.example.service.location.AppLocationManager.NAGPUR_CENTER_LAT &&
+                  loc.longitude == com.example.service.location.AppLocationManager.NAGPUR_CENTER_LNG)
+
+            val validLat = if (hasValidFix) loc.latitude else null
+            val validLng = if (hasValidFix) loc.longitude else null
+            val validAccuracy = if (hasValidFix) loc.accuracy else null
+            val description = if (hasValidFix) loc.description else "Location unavailable"
+
             when (triggerType) {
                 "VOICE_SOS" -> {
                     auditRepo.logVoiceSosActivation(
                         verifiedPhrase = phrase,
                         speakerScore = speakerScore,
                         threshold = 0.72f,
-                        locationSector = loc.description
+                        locationSector = description
                     )
                 }
                 "CHILD_SOS" -> {
@@ -56,7 +69,7 @@ object EmergencyOrchestrator {
                 }
                 else -> {
                     auditRepo.logManualPanicActivation(
-                        locationSector = loc.description
+                        locationSector = description
                     )
                 }
             }
@@ -66,10 +79,10 @@ object EmergencyOrchestrator {
                 triggerType = triggerType,
                 phraseDetected = phrase,
                 speakerScore = speakerScore,
-                lat = loc.latitude,
-                lng = loc.longitude,
-                accuracyMeters = loc.accuracy,
-                locationDescription = loc.description,
+                lat = validLat,
+                lng = validLng,
+                accuracyMeters = validAccuracy,
+                locationDescription = description,
                 isDemoMode = settingsRepo.isDemoMode.value
             )
 

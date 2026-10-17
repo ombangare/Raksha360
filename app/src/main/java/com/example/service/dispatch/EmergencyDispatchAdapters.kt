@@ -47,7 +47,7 @@ class ProductionPoliceDispatchAdapter(
         event: EmergencyEventEntity,
         location: GeoCoordinates
     ): DispatchResult {
-        val isConfigured = settingsRepo.policeEndpointConfigured.value
+        val isConfigured = settingsRepo.policeEndpointConfigured.value && backendClient.isConfigured
         val endpointUrl = settingsRepo.policeEndpointUrl.value
 
         if (!isConfigured || endpointUrl.isBlank()) {
@@ -90,9 +90,14 @@ class ProductionPoliceDispatchAdapter(
                     }
                 },
                 onFailure = { error ->
+                    val isUnconfigured = error.message?.contains("not configured", ignoreCase = true) == true
                     DispatchResult(
-                        status = DispatchStatus.FAILED,
-                        message = "Police dispatch request failed: ${error.localizedMessage}. Dial 112."
+                        status = if (isUnconfigured) DispatchStatus.UNAVAILABLE else DispatchStatus.FAILED,
+                        message = if (isUnconfigured) {
+                            "No authorized Police / Control Room API endpoint configured. Immediate action: Dial 112 directly."
+                        } else {
+                            "Police dispatch request failed: ${error.localizedMessage}. Dial 112."
+                        }
                     )
                 }
             )

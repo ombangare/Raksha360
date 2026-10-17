@@ -39,6 +39,9 @@ class BackendApiClient(
         val isDemoMode: Boolean = true
     )
 
+    val isConfigured: Boolean
+        get() = getApiConfig().let { it.isConfigured && it.baseUrl.isNotBlank() }
+
     val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -310,8 +313,8 @@ class BackendApiClient(
         withContext(Dispatchers.IO) {
             val config = getApiConfig()
 
-            if (config.isDemoMode || !config.isConfigured) {
-                // Local simulation for demo mode / testing
+            // Safe fallback for isolated offline demo drills where network is unreachable
+            if (request.triggerType.startsWith("DEMO_") && (!isOnline() || !config.isConfigured)) {
                 val ticket = "DEMO-TKT-" + UUID.randomUUID().toString().take(8).uppercase()
                 return@withContext Result.success(
                     EmergencyEventResponse(
@@ -327,6 +330,10 @@ class BackendApiClient(
                 return@withContext Result.failure(IOException("No network connection available (Offline)"))
             }
 
+            if (!config.isConfigured || config.baseUrl.isBlank()) {
+                return@withContext Result.failure(IOException("Control room endpoint not configured."))
+            }
+
             try {
                 val json = JSONObject().apply {
                     put("eventId", request.eventId)
@@ -334,9 +341,9 @@ class BackendApiClient(
                     put("triggerType", request.triggerType)
                     put("phraseDetected", request.phraseDetected)
                     put("speakerConfidence", request.speakerConfidence)
-                    put("latitude", request.latitude)
-                    put("longitude", request.longitude)
-                    put("accuracyMeters", request.accuracyMeters)
+                    put("latitude", request.latitude ?: JSONObject.NULL)
+                    put("longitude", request.longitude ?: JSONObject.NULL)
+                    put("accuracyMeters", request.accuracyMeters?.toDouble() ?: JSONObject.NULL)
                     put("locationDescription", request.locationDescription)
                     put("deviceSessionId", request.deviceSessionId)
                     put("isDemoMode", request.isDemoMode)
@@ -350,17 +357,17 @@ class BackendApiClient(
                     .build()
 
                 val response = okHttpClient.newCall(httpRequest).execute()
+                val bodyStr = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    return@withContext Result.failure(IOException("HTTP Error ${response.code}: ${response.message}"))
+                    return@withContext Result.failure(IOException("HTTP Error ${response.code}: $bodyStr"))
                 }
 
-                val bodyStr = response.body?.string() ?: ""
                 val respJson = JSONObject(bodyStr)
                 Result.success(
                     EmergencyEventResponse(
                         eventId = respJson.optString("eventId", request.eventId),
                         status = respJson.optString("status", "RECEIVED"),
-                        trackingToken = respJson.optString("trackingToken", "SYNC-" + UUID.randomUUID().toString().take(6)),
+                        trackingToken = respJson.optString("trackingToken", "RKS-" + request.eventId.take(8).uppercase()),
                         serverTimestamp = respJson.optLong("serverTimestamp", System.currentTimeMillis())
                     )
                 )
@@ -377,14 +384,12 @@ class BackendApiClient(
                 return@withContext Result.failure(IOException("No network connection (Offline)"))
             }
 
-            if (config.isDemoMode || !config.isConfigured) {
-                // The location may exist in local Room state, but no server accepted it in demo mode.
-                return@withContext Result.success(
-                    EmergencyLocationResponse(
-                        recorded = false,
-                        liveSessionUrl = ""
-                    )
-                )
+            if (!config.isConfigured || config.baseUrl.isBlank()) {
+                return@withContext Result.failure(IOException("Location streaming endpoint is not configured."))
+            }
+
+            if (request.latitude == 0.0 && request.longitude == 0.0) {
+                return@withContext Result.failure(IllegalArgumentException("Invalid GPS coordinates (0, 0)"))
             }
 
             try {
@@ -427,16 +432,8 @@ class BackendApiClient(
                 return@withContext Result.failure(IOException("No network connection (Offline)"))
             }
 
-            if (config.isDemoMode || !config.isConfigured) {
-                // No SMS, email or push provider is configured. Do not display fake delivery success.
-                return@withContext Result.success(
-                    TrustedContactAlertResponse(
-                        eventId = request.eventId,
-                        sentCount = 0,
-                        failedCount = request.contacts.size,
-                        channelsDispatched = emptyList()
-                    )
-                )
+            if (!config.isConfigured || config.baseUrl.isBlank()) {
+                return@withContext Result.failure(IOException("Contact dispatch endpoint is not configured."))
             }
 
             try {
@@ -445,7 +442,7 @@ class BackendApiClient(
                     contactsArray.put(JSONObject().apply {
                         put("name", c.name)
                         put("phoneNumber", c.phoneNumber)
-                        put("email", c.email)
+                        put("email", c.email ?: JSONObject.NULL)
                         put("deliveryChannels", JSONArray(c.deliveryChannels))
                     })
                 }
@@ -455,8 +452,8 @@ class BackendApiClient(
                     put("timestamp", request.timestamp)
                     put("contacts", contactsArray)
                     put("triggerType", request.triggerType)
-                    put("latitude", request.lastKnownLocation.latitude)
-                    put("longitude", request.lastKnownLocation.longitude)
+                    put("latitude", if (request.lastKnownLocation.latitude != 0.0) request.lastKnownLocation.latitude else JSONObject.NULL)
+                    put("longitude", if (request.lastKnownLocation.longitude != 0.0) request.lastKnownLocation.longitude else JSONObject.NULL)
                     put("address", request.lastKnownLocation.address)
                     put("liveTrackingUrl", request.liveTrackingUrl)
                 }
@@ -464,22 +461,25 @@ class BackendApiClient(
                 val httpRequest = Request.Builder()
                     .url("${config.baseUrl.removeSuffix("/")}/trusted-contact-alerts")
                     .header("Authorization", "Bearer ${config.authToken}")
+                    .header("Content-Type", "application/json")
                     .post(json.toString().toRequestBody(jsonMedia))
                     .build()
 
                 val response = okHttpClient.newCall(httpRequest).execute()
+                val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    return@withContext Result.failure(IOException("HTTP Error ${response.code}"))
+                    return@withContext Result.failure(IOException("HTTP Error ${response.code}: $body"))
                 }
 
-                val body = response.body?.string() ?: "{}"
                 val resObj = JSONObject(body)
                 Result.success(
                     TrustedContactAlertResponse(
                         eventId = resObj.optString("eventId", request.eventId),
-                        sentCount = resObj.optInt("sentCount", request.contacts.size),
-                        failedCount = resObj.optInt("failedCount", 0),
-                        channelsDispatched = resObj.optJSONArray("channelsDispatched")?.let { array -> List(array.length()) { index -> array.optString(index) } } ?: emptyList()
+                        sentCount = resObj.optInt("sentCount", 0),
+                        failedCount = resObj.optInt("failedCount", request.contacts.size),
+                        channelsDispatched = resObj.optJSONArray("channelsDispatched")?.let { array ->
+                            List(array.length()) { index -> array.optString(index) }
+                        } ?: emptyList()
                     )
                 )
             } catch (e: Exception) {
@@ -491,21 +491,12 @@ class BackendApiClient(
         withContext(Dispatchers.IO) {
             val config = getApiConfig()
 
-            if (config.isDemoMode || !config.isConfigured) {
-                // Keep the event locally; a demo-mode request is not a real police dispatch.
-                return@withContext Result.success(
-                    PoliceAlertResponse(
-                        acknowledged = false,
-                        controlRoomTicketId = "DEMO-LOCAL-${request.eventId.take(12)}",
-                        assignedUnit = null,
-                        estimatedResponseMinutes = null,
-                        message = "Demo only: no police service was contacted and no unit was dispatched. In a real emergency, call 112 directly."
-                    )
-                )
-            }
-
             if (!isOnline()) {
                 return@withContext Result.failure(IOException("No network connection (Offline)"))
+            }
+
+            if (!config.isConfigured || config.baseUrl.isBlank()) {
+                return@withContext Result.failure(IOException("Police control room endpoint is not configured."))
             }
 
             try {
@@ -515,35 +506,36 @@ class BackendApiClient(
                     put("timestamp", request.timestamp)
                     put("triggerType", request.triggerType)
                     put("verifiedVoiceTrigger", request.verifiedVoiceTrigger)
-                    put("latitude", request.latitude)
-                    put("longitude", request.longitude)
+                    if (request.latitude != 0.0) put("latitude", request.latitude)
+                    if (request.longitude != 0.0) put("longitude", request.longitude)
                     put("accuracyMeters", request.accuracyMeters)
                     put("audioIncidentRecorded", request.audioIncidentRecorded)
-                    put("sha256IntegrityHash", request.sha256IntegrityHash)
+                    put("sha256IntegrityHash", request.sha256IntegrityHash ?: JSONObject.NULL)
                     put("callerNotes", request.callerNotes)
-                    put("isDemoMode", false)
+                    put("isDemoMode", request.isDemoMode)
                 }
 
                 val httpRequest = Request.Builder()
                     .url("${config.baseUrl.removeSuffix("/")}/police-alerts")
                     .header("Authorization", "Bearer ${config.authToken}")
+                    .header("Content-Type", "application/json")
                     .post(json.toString().toRequestBody(jsonMedia))
                     .build()
 
                 val response = okHttpClient.newCall(httpRequest).execute()
+                val body = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    return@withContext Result.failure(IOException("HTTP ${response.code}: Police endpoint rejected request"))
+                    return@withContext Result.failure(IOException("HTTP ${response.code}: Police endpoint rejected request: $body"))
                 }
 
-                val body = response.body?.string() ?: "{}"
                 val resObj = JSONObject(body)
                 Result.success(
                     PoliceAlertResponse(
                         acknowledged = resObj.optBoolean("acknowledged", false),
-                        controlRoomTicketId = resObj.optString("controlRoomTicketId", ""),
+                        controlRoomTicketId = resObj.optString("controlRoomTicketId", "RKS-CR-${request.eventId.take(8).uppercase()}"),
                         assignedUnit = resObj.optString("assignedUnit").takeIf { it.isNotBlank() },
                         estimatedResponseMinutes = resObj.optInt("estimatedResponseMinutes", -1).takeIf { it >= 0 },
-                        message = resObj.optString("message", "The local backend did not confirm official dispatch.")
+                        message = resObj.optString("message", "The event is in Raksha360's local control-room queue. No official police dispatch gateway is configured; call 112 directly for an emergency.")
                     )
                 )
             } catch (e: Exception) {

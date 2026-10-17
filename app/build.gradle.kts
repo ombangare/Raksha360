@@ -24,6 +24,9 @@ android {
   val configuredApiBaseUrl = localProperties.getProperty("backend.api.url")?.trim()
     ?: System.getenv("BACKEND_API_URL")?.trim()
     ?: "https://raksha360-api.onrender.com/api/v1"
+  val configuredDeviceToken = localProperties.getProperty("device.token")?.trim()
+    ?: System.getenv("RAKSHA360_DEVICE_TOKEN")?.trim()
+    ?: "local-dev-device-token-change-me"
 
   defaultConfig {
     applicationId = "com.aistudio.naarikavach.safe7x"
@@ -34,6 +37,7 @@ android {
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     buildConfigField("String", "DEFAULT_API_BASE_URL", "\"$configuredApiBaseUrl\"")
+    buildConfigField("String", "DEFAULT_DEVICE_TOKEN", "\"$configuredDeviceToken\"")
     buildConfigField("Boolean", "IS_PRODUCTION", "true")
     buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
   }

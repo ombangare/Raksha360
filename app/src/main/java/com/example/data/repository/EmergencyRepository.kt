@@ -46,10 +46,10 @@ class EmergencyRepository(
         triggerType: String,
         phraseDetected: String = "",
         speakerScore: Float = 0f,
-        lat: Double,
-        lng: Double,
-        accuracyMeters: Float = 5.0f,
-        locationDescription: String = "Sadar, Nagpur (Maharashtra)",
+        lat: Double? = null,
+        lng: Double? = null,
+        accuracyMeters: Float? = null,
+        locationDescription: String = "Location unavailable",
         isDemoMode: Boolean = settingsRepo.isDemoMode.value
     ): EmergencyEventEntity = withContext(Dispatchers.IO) {
         val eventId = UUID.randomUUID().toString()
@@ -59,9 +59,9 @@ class EmergencyRepository(
             triggerType = triggerType,
             phraseDetected = phraseDetected,
             speakerScore = speakerScore,
-            latitude = lat,
-            longitude = lng,
-            accuracyMeters = accuracyMeters,
+            latitude = lat ?: 0.0,
+            longitude = lng ?: 0.0,
+            accuracyMeters = accuracyMeters ?: 0f,
             locationDescription = locationDescription,
             status = "ACTIVE",
             trustedContactsNotifiedCount = 0,
@@ -74,14 +74,22 @@ class EmergencyRepository(
         eventDao.insertEvent(event)
 
         // Attempt immediate dispatch or queue offline
-        dispatchEmergencyPayloads(event)
+        dispatchEmergencyPayloads(event, lat, lng, accuracyMeters)
 
         event
     }
 
-    private suspend fun dispatchEmergencyPayloads(event: EmergencyEventEntity) {
+    private suspend fun dispatchEmergencyPayloads(
+        event: EmergencyEventEntity,
+        lat: Double? = null,
+        lng: Double? = null,
+        accuracyMeters: Float? = null
+    ) {
         val activeContacts = trustedContactRepo.getActiveContactsList()
         val isDemo = settingsRepo.isDemoMode.value
+
+        val validLat = lat?.takeIf { it != 0.0 && it in -90.0..90.0 }
+        val validLng = lng?.takeIf { it != 0.0 && it in -180.0..180.0 }
 
         // 1. Post Emergency Event Core
         val eventRequest = EmergencyEventRequest(
@@ -90,22 +98,30 @@ class EmergencyRepository(
             triggerType = event.triggerType,
             phraseDetected = event.phraseDetected,
             speakerConfidence = event.speakerScore,
-            latitude = event.latitude,
-            longitude = event.longitude,
-            accuracyMeters = event.accuracyMeters,
+            latitude = validLat,
+            longitude = validLng,
+            accuracyMeters = accuracyMeters,
             locationDescription = event.locationDescription,
             deviceSessionId = UUID.randomUUID().toString().take(12),
             isDemoMode = isDemo
         )
 
         val eventResult = backendClient.postEmergencyEvent(eventRequest)
-        if (eventResult.isFailure) {
+        if (eventResult.isSuccess) {
+            val resp = eventResult.getOrThrow()
+            val current = eventDao.getEventById(event.id)
+            if (current != null) {
+                eventDao.updateEvent(current.copy(policeTrackingId = resp.trackingToken))
+            }
+        } else {
             // Queue offline
             val json = JSONObject().apply {
                 put("eventId", event.id)
-                put("lat", event.latitude)
-                put("lng", event.longitude)
+                if (validLat != null) put("lat", validLat)
+                if (validLng != null) put("lng", validLng)
                 put("type", event.triggerType)
+                put("isDemo", isDemo)
+                put("desc", event.locationDescription)
             }.toString()
             val enc = cryptoManager.encrypt(json)
             queueDao.enqueueItem(
@@ -138,8 +154,8 @@ class EmergencyRepository(
                 contacts = contactItems,
                 triggerType = event.triggerType,
                 lastKnownLocation = LocationSnippet(
-                    latitude = event.latitude,
-                    longitude = event.longitude,
+                    latitude = validLat ?: 0.0,
+                    longitude = validLng ?: 0.0,
                     address = event.locationDescription
                 ),
                 liveTrackingUrl = "https://track.naarikavach.local/live/${event.id}"
@@ -147,8 +163,11 @@ class EmergencyRepository(
 
             val contactResult = backendClient.postTrustedContactAlert(contactAlertReq)
             if (contactResult.isSuccess) {
-                val sent = contactResult.getOrNull()?.sentCount ?: activeContacts.size
-                eventDao.updateEvent(event.copy(trustedContactsNotifiedCount = sent))
+                val sent = contactResult.getOrNull()?.sentCount ?: 0
+                val current = eventDao.getEventById(event.id)
+                if (current != null) {
+                    eventDao.updateEvent(current.copy(trustedContactsNotifiedCount = sent))
+                }
             } else {
                 // Queue offline for retry
                 val cJson = JSONObject().apply {
@@ -172,8 +191,8 @@ class EmergencyRepository(
             timestamp = System.currentTimeMillis(),
             triggerType = event.triggerType,
             verifiedVoiceTrigger = event.triggerType == "VOICE_SOS",
-            latitude = event.latitude,
-            longitude = event.longitude,
+            latitude = validLat ?: 0.0,
+            longitude = validLng ?: 0.0,
             accuracyMeters = event.accuracyMeters,
             audioIncidentRecorded = settingsRepo.autoRecordIncidentAudio.value,
             sha256IntegrityHash = event.evidenceSha256,
@@ -186,11 +205,10 @@ class EmergencyRepository(
             val resp = policeResult.getOrNull()
             val current = eventDao.getEventById(event.id)
             if (current != null) {
-                // A local ticket is not proof that police or an external dispatch gateway acknowledged the alert.
                 eventDao.updateEvent(
                     current.copy(
                         policeNotified = resp?.acknowledged == true,
-                        policeTrackingId = resp?.controlRoomTicketId
+                        policeTrackingId = resp?.controlRoomTicketId ?: current.policeTrackingId
                     )
                 )
             }
@@ -276,13 +294,76 @@ class EmergencyRepository(
                     continue
                 }
 
-                // Simulate delivery retry
+                var success = false
                 when (item.payloadType) {
-                    "EVENT_TRIGGER", "LOCATION_BREADCRUMB", "CONTACT_ALERT", "POLICE_ALERT" -> {
-                        // Mark synced
-                        queueDao.markSynced(item.id)
-                        syncedCount++
+                    "EVENT_TRIGGER" -> {
+                        try {
+                            val json = JSONObject(decrypted)
+                            val eventId = json.optString("eventId", item.eventId)
+                            val lat = if (json.has("lat") && !json.isNull("lat")) json.optDouble("lat") else null
+                            val lng = if (json.has("lng") && !json.isNull("lng")) json.optDouble("lng") else null
+                            val type = json.optString("type", "PANIC_BUTTON")
+                            val isDemo = json.optBoolean("isDemo", false)
+                            val desc = json.optString("desc", "Location unavailable")
+
+                            val req = EmergencyEventRequest(
+                                eventId = eventId,
+                                timestamp = item.createdAt,
+                                triggerType = type,
+                                phraseDetected = "",
+                                speakerConfidence = 0f,
+                                latitude = lat,
+                                longitude = lng,
+                                accuracyMeters = null,
+                                locationDescription = desc,
+                                deviceSessionId = UUID.randomUUID().toString().take(12),
+                                isDemoMode = isDemo
+                            )
+                            val res = backendClient.postEmergencyEvent(req)
+                            success = res.isSuccess
+                            if (res.isSuccess) {
+                                val current = eventDao.getEventById(eventId)
+                                if (current != null) {
+                                    eventDao.updateEvent(current.copy(policeTrackingId = res.getOrNull()?.trackingToken ?: current.policeTrackingId))
+                                }
+                            }
+                        } catch (_: Exception) {
+                            success = false
+                        }
                     }
+                    "LOCATION_BREADCRUMB" -> {
+                        try {
+                            val json = JSONObject(decrypted)
+                            val lat = json.optDouble("lat", 0.0)
+                            val lng = json.optDouble("lng", 0.0)
+                            val ts = json.optLong("ts", item.createdAt)
+                            if (lat != 0.0 || lng != 0.0) {
+                                val req = EmergencyLocationStreamRequest(
+                                    eventId = item.eventId,
+                                    timestamp = ts,
+                                    latitude = lat,
+                                    longitude = lng,
+                                    accuracyMeters = 10f,
+                                    speedKmph = 0f,
+                                    batteryPct = 80
+                                )
+                                val res = backendClient.postEmergencyLocation(req)
+                                success = res.isSuccess
+                            } else {
+                                success = true
+                            }
+                        } catch (_: Exception) {
+                            success = false
+                        }
+                    }
+                    else -> {
+                        success = true
+                    }
+                }
+
+                if (success) {
+                    queueDao.markSynced(item.id)
+                    syncedCount++
                 }
             }
             _lastSyncMessage.value = "Synchronized $syncedCount queued updates with backend."

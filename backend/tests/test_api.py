@@ -1692,6 +1692,161 @@ def test_sos_email_live_mode_apps_script_gateway_flow_and_deduplication(client: 
     assert len(dispatched_recipients) == 2
 
 
+def test_authenticated_user_sos_associates_citizen_profile_and_broadcasts(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    """Verifies that an SOS event triggered by an authenticated citizen user
+    correctly links their profile details to the persisted incident and control-room queue."""
+    mock_claims = {
+        "iss": "https://accounts.google.com",
+        "sub": "user_sos_sub_789",
+        "email": "citizen.om@example.com",
+        "name": "Om Bangare",
+        "aud": "mock-web-client-id.apps.googleusercontent.com",
+    }
+    monkeypatch.setattr(api.google_id_token, "verify_oauth2_token", lambda *args, **kwargs: mock_claims)
+    monkeypatch.setattr(api, "get_expected_google_client_id", lambda: "mock-web-client-id.apps.googleusercontent.com")
+
+    auth_resp = client.post("/api/v1/auth/google", json={"idToken": "fake-jwt-token"})
+    assert auth_resp.status_code == 200
+    session_token = auth_resp.json()["sessionToken"]
+    user_headers = {"Authorization": f"Bearer {session_token}"}
+    dashboard_headers = {"X-Dashboard-Token": "test-dashboard-token"}
+
+    event_id = f"SOS-AUTH-{uuid.uuid4()}"
+    sos_payload = {
+        "eventId": event_id,
+        "triggerType": "VOICE_SOS",
+        "phraseDetected": "Help me",
+        "speakerConfidence": 0.88,
+        "latitude": 21.1458,
+        "longitude": 79.0882,
+        "accuracyMeters": 8.0,
+        "locationDescription": "Dharampeth, Nagpur",
+        "deviceSessionId": "auth-session-test",
+        "isDemoMode": False,
+    }
+    resp = client.post("/api/v1/emergency-events", headers=user_headers, json=sos_payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["eventId"] == event_id
+    assert data["controlRoomReceived"] is True
+    assert data["officialPoliceDispatch"] == "NOT_CONFIGURED"
+
+    # Verify incident in dashboard inbox has user details attached
+    incidents_resp = client.get("/api/v1/incidents?include_demo=true", headers=dashboard_headers)
+    assert incidents_resp.status_code == 200
+    items = incidents_resp.json()["items"]
+    matched = [inc for inc in items if inc["event_id"] == event_id]
+    assert len(matched) == 1
+    incident = matched[0]
+    assert incident["details"]["userId"] == "user_sos_sub_789"
+    assert incident["details"]["userEmail"] == "citizen.om@example.com"
+    assert incident["details"]["userName"] == "Om Bangare"
+    assert incident["details"]["authenticatedIdentity"] == "USER:user_sos_sub_789"
+    assert incident["latitude"] == pytest.approx(21.1458)
+    assert incident["longitude"] == pytest.approx(79.0882)
+
+
+def test_sos_event_coordinate_sanitization_and_fallback_handling(client: TestClient):
+    """Verifies that (0.0, 0.0) coordinates are sanitized to None and described as Location unavailable."""
+    headers = {"Authorization": "Bearer test-device-token"}
+    dashboard_headers = {"X-Dashboard-Token": "test-dashboard-token"}
+
+    event_id = f"SOS-ZERO-{uuid.uuid4()}"
+    zero_payload = {
+        "eventId": event_id,
+        "triggerType": "PANIC_BUTTON",
+        "latitude": 0.0,
+        "longitude": 0.0,
+        "accuracyMeters": 0.0,
+        "locationDescription": "Nagpur fallback placeholder",
+        "isDemoMode": False,
+    }
+    resp = client.post("/api/v1/emergency-events", headers=headers, json=zero_payload)
+    assert resp.status_code == 200
+
+    with api.db() as conn:
+        row = conn.execute("SELECT latitude, longitude, location_description FROM incidents WHERE event_id = ?", (event_id,)).fetchone()
+        assert row is not None
+        assert row["latitude"] is None
+        assert row["longitude"] is None
+        assert row["location_description"] == "Location unavailable"
+
+
+def test_sos_event_idempotent_retry_updates_location_without_duplicate(client: TestClient):
+    """Verifies that re-submitting an SOS event with the same eventId updates the incident record
+    and does not create a duplicate row in the database."""
+    headers = {"Authorization": "Bearer test-device-token"}
+    event_id = f"SOS-RETRY-{uuid.uuid4()}"
+
+    initial_payload = {
+        "eventId": event_id,
+        "triggerType": "MANUAL_SOS",
+        "latitude": 21.1400,
+        "longitude": 79.0800,
+        "accuracyMeters": 25.0,
+        "locationDescription": "Initial location",
+        "isDemoMode": False,
+    }
+    first_resp = client.post("/api/v1/emergency-events", headers=headers, json=initial_payload)
+    assert first_resp.status_code == 200
+
+    # Retry with fresh updated GPS fix
+    retry_payload = {
+        "eventId": event_id,
+        "triggerType": "MANUAL_SOS",
+        "latitude": 21.1458,
+        "longitude": 79.0882,
+        "accuracyMeters": 7.0,
+        "locationDescription": "Refined GPS fix",
+        "isDemoMode": False,
+    }
+    second_resp = client.post("/api/v1/emergency-events", headers=headers, json=retry_payload)
+    assert second_resp.status_code == 200
+    assert second_resp.json()["eventId"] == event_id
+
+    with api.db() as conn:
+        rows = conn.execute("SELECT * FROM incidents WHERE event_id = ?", (event_id,)).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["latitude"] == pytest.approx(21.1458)
+        assert rows[0]["longitude"] == pytest.approx(79.0882)
+        assert rows[0]["location_description"] == "Refined GPS fix"
+
+
+def test_location_update_rejects_null_island_and_persists_valid_breadcrumbs(client: TestClient):
+    """Verifies that location breadcrumbs reject (0,0) and successfully record genuine GPS coordinates."""
+    device = {"Authorization": "Bearer test-device-token"}
+    event_id = f"SOS-BREADCRUMB-{uuid.uuid4()}"
+
+    # Setup incident
+    client.post("/api/v1/emergency-events", headers=device, json={
+        "eventId": event_id,
+        "triggerType": "PANIC_BUTTON",
+        "isDemoMode": False,
+    })
+
+    # Reject (0, 0) Null Island
+    bad_res = client.post("/api/v1/emergency-locations", headers=device, json={
+        "eventId": event_id,
+        "latitude": 0.0,
+        "longitude": 0.0,
+        "accuracyMeters": 0.0,
+    })
+    assert bad_res.status_code == 422
+
+    # Accept genuine GPS breadcrumb
+    good_res = client.post("/api/v1/emergency-locations", headers=device, json={
+        "eventId": event_id,
+        "latitude": 21.1472,
+        "longitude": 79.0895,
+        "accuracyMeters": 6.5,
+        "speedKmph": 1.2,
+        "batteryPct": 85,
+    })
+    assert good_res.status_code == 200
+    assert good_res.json()["recorded"] is True
+
+
+
 
 
 

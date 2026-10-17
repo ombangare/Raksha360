@@ -15,6 +15,7 @@ import android.location.LocationManager as AndroidLocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
 import com.example.NaariKavachApp
@@ -160,7 +161,8 @@ class ForegroundLocationService : Service() {
                     AndroidLocationManager.GPS_PROVIDER,
                     3000L,
                     3.0f,
-                    locationListener
+                    locationListener,
+                    Looper.getMainLooper()
                 )
             }
             if (lm.isProviderEnabled(AndroidLocationManager.NETWORK_PROVIDER)) {
@@ -168,7 +170,8 @@ class ForegroundLocationService : Service() {
                     AndroidLocationManager.NETWORK_PROVIDER,
                     3000L,
                     3.0f,
-                    locationListener
+                    locationListener,
+                    Looper.getMainLooper()
                 )
             }
         } catch (_: SecurityException) {}

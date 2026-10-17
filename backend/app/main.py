@@ -1660,26 +1660,70 @@ def list_device_status() -> dict[str, Any]:
     return {"items": [_device_status_payload(row) for row in rows], "total": len(rows), "smtpConfigured": _smtp_is_configured(), "offlineThresholdSeconds": max(60, int(os.getenv("RAKSHA360_OFFLINE_THRESHOLD_SECONDS", str(OFFLINE_THRESHOLD_DEFAULT_SECONDS))))}
 
 
-@app.post("/api/v1/emergency-events", dependencies=[Depends(require_device)])
-async def receive_emergency_event(payload: DeviceEmergencyEvent) -> dict[str, Any]:
+@app.post("/api/v1/emergency-events")
+async def receive_emergency_event(
+    payload: DeviceEmergencyEvent,
+    identity: str = Depends(require_device),
+) -> dict[str, Any]:
     event_id = payload.eventId
     severity = severity_for(payload.triggerType)
     is_demo = payload.isDemoMode or payload.triggerType.upper().startswith("DEMO_")
     current = utc_ms()
-    details = {
+
+    # Sanitize and validate GPS coordinates
+    has_valid_coords = (
+        payload.latitude is not None
+        and payload.longitude is not None
+        and -90.0 <= payload.latitude <= 90.0
+        and -180.0 <= payload.longitude <= 180.0
+        and not (payload.latitude == 0.0 and payload.longitude == 0.0)
+    )
+    sanitized_lat = payload.latitude if has_valid_coords else None
+    sanitized_lon = payload.longitude if has_valid_coords else None
+    sanitized_acc = payload.accuracyMeters if has_valid_coords else None
+    loc_desc = payload.locationDescription if has_valid_coords else "Location unavailable"
+
+    details: dict[str, Any] = {
         "phraseDetected": payload.phraseDetected,
         "speakerConfidence": payload.speakerConfidence,
         "deviceSessionId": payload.deviceSessionId,
         "source": "ANDROID_APP",
         "privacyNote": "No raw audio or speaker embedding is stored by this API endpoint.",
+        "authenticatedIdentity": identity,
     }
+
+    # Associate authenticated citizen user profile if triggered by an authenticated session
+    if identity.startswith("USER:"):
+        uid = identity[5:]
+        try:
+            with db() as conn:
+                user_row = conn.execute("SELECT uid, email, display_name FROM users WHERE uid = ?", (uid,)).fetchone()
+                if user_row:
+                    details["userId"] = user_row["uid"]
+                    details["userEmail"] = user_row["email"]
+                    details["userName"] = user_row["display_name"]
+        except Exception as exc:
+            logger.warning("Could not associate user profile for SOS incident: %s", exc)
+
     with db() as conn:
         existing = conn.execute("SELECT * FROM incidents WHERE event_id = ?", (event_id,)).fetchone()
         if existing:
-            conn.execute(
-                "UPDATE incidents SET updated_at = ?, details_json = ? WHERE event_id = ?",
-                (current, json.dumps(details), event_id),
-            )
+            # Idempotent retry: preserve original reported_at, update location if fresh coords provided
+            if has_valid_coords:
+                conn.execute(
+                    """UPDATE incidents SET
+                       updated_at = ?, details_json = ?, latitude = ?, longitude = ?,
+                       accuracy_meters = ?, last_latitude = ?, last_longitude = ?,
+                       last_location_at = ?, location_description = ?
+                       WHERE event_id = ?""",
+                    (current, json.dumps(details), sanitized_lat, sanitized_lon,
+                     sanitized_acc, sanitized_lat, sanitized_lon, current, loc_desc, event_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE incidents SET updated_at = ?, details_json = ? WHERE event_id = ?",
+                    (current, json.dumps(details), event_id),
+                )
             row = conn.execute("SELECT * FROM incidents WHERE event_id = ?", (event_id,)).fetchone()
             created = False
         else:
@@ -1689,15 +1733,16 @@ async def receive_emergency_event(payload: DeviceEmergencyEvent) -> dict[str, An
                    is_demo, source, updated_at, last_location_at, last_latitude, last_longitude, details_json)
                    VALUES (?, ?, ?, ?, ?, 'New', ?, ?, ?, ?, ?, ?, ?, 'ANDROID_APP', ?, ?, ?, ?, ?)""",
                 (event_id, payload.triggerType, payload.phraseDetected, payload.speakerConfidence, payload.timestamp,
-                 severity, payload.latitude, payload.longitude, payload.accuracyMeters, payload.locationDescription,
-                 payload.deviceSessionId, int(is_demo), current, payload.timestamp if payload.latitude is not None else None,
-                 payload.latitude, payload.longitude, json.dumps(details)),
+                 severity, sanitized_lat, sanitized_lon, sanitized_acc, loc_desc,
+                 payload.deviceSessionId, int(is_demo), current, current if has_valid_coords else None,
+                 sanitized_lat, sanitized_lon, json.dumps(details)),
             )
             row = conn.execute("SELECT * FROM incidents WHERE event_id = ?", (event_id,)).fetchone()
             created = True
+
     incident = row_to_incident(row) or {}
     create_audit("ANDROID_APP", "EMERGENCY_CREATED" if created else "EMERGENCY_RETRY_DEDUPLICATED", event_id,
-                 f"{payload.triggerType} received from Android app; isDemo={is_demo}.", is_demo)
+                 f"{payload.triggerType} received from Android app ({identity}); isDemo={is_demo}.", is_demo)
     await manager.broadcast("INCIDENT_CREATED" if created else "INCIDENT_UPDATED", incident)
     return {
         "eventId": event_id,
@@ -1706,12 +1751,26 @@ async def receive_emergency_event(payload: DeviceEmergencyEvent) -> dict[str, An
         "serverTimestamp": current,
         "isDemo": is_demo,
         "officialPoliceDispatch": "NOT_CONFIGURED",
+        "controlRoomReceived": True,
     }
 
 
-@app.post("/api/v1/emergency-locations", dependencies=[Depends(require_device)])
-async def receive_location_update(payload: DeviceLocationUpdate) -> dict[str, Any]:
+@app.post("/api/v1/emergency-locations")
+async def receive_location_update(
+    payload: DeviceLocationUpdate,
+    identity: str = Depends(require_device),
+) -> dict[str, Any]:
     current = utc_ms()
+    has_valid_coords = (
+        payload.latitude is not None
+        and payload.longitude is not None
+        and -90.0 <= payload.latitude <= 90.0
+        and -180.0 <= payload.longitude <= 180.0
+        and not (payload.latitude == 0.0 and payload.longitude == 0.0)
+    )
+    if not has_valid_coords:
+        raise HTTPException(status_code=422, detail="Invalid GPS coordinates (out of range or zero).")
+
     with db() as conn:
         incident = conn.execute("SELECT event_id, is_demo FROM incidents WHERE event_id = ?", (payload.eventId,)).fetchone()
         if incident is None:
@@ -1723,7 +1782,8 @@ async def receive_location_update(payload: DeviceLocationUpdate) -> dict[str, An
              payload.accuracyMeters, payload.speedKmph, payload.batteryPct, current),
         )
         conn.execute(
-            "UPDATE incidents SET last_location_at = ?, last_latitude = ?, last_longitude = ?, latitude = ?, longitude = ?, accuracy_meters = ?, updated_at = ? WHERE event_id = ?",
+            """UPDATE incidents SET last_location_at = ?, last_latitude = ?, last_longitude = ?,
+               latitude = ?, longitude = ?, accuracy_meters = ?, updated_at = ? WHERE event_id = ?""",
             (payload.timestamp, payload.latitude, payload.longitude, payload.latitude, payload.longitude,
              payload.accuracyMeters, current, payload.eventId),
         )

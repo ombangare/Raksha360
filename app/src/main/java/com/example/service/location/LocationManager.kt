@@ -8,6 +8,7 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager as AndroidLocationManager
 import android.os.Bundle
+import android.os.Looper
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -227,7 +228,8 @@ class AppLocationManager(private val context: Context) {
                         AndroidLocationManager.GPS_PROVIDER,
                         minTimeMs,
                         minDistanceM,
-                        locationListener
+                        locationListener,
+                        Looper.getMainLooper()
                     )
                 }
                 if (lm.isProviderEnabled(AndroidLocationManager.NETWORK_PROVIDER)) {
@@ -235,7 +237,8 @@ class AppLocationManager(private val context: Context) {
                         AndroidLocationManager.NETWORK_PROVIDER,
                         minTimeMs,
                         minDistanceM,
-                        locationListener
+                        locationListener,
+                        Looper.getMainLooper()
                     )
                 }
                 isListening = true

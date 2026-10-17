@@ -1697,7 +1697,7 @@ export default function App() {
   const [fullModalIncident, setFullModalIncident] = useState(null);
   const [selectedReport, setSelectedReport] = useState(null);
   const [reportModal, setReportModal] = useState(false);
-  const [showDemoMode, setShowDemoMode] = useState(false);
+  const [showDemoMode, setShowDemoMode] = useState(true);
   const [dispatchModalData, setDispatchModalData] = useState(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
@@ -1842,10 +1842,45 @@ export default function App() {
             return;
           }
           lastEventRef.current = packet.type;
-          if (['INCIDENT_CREATED','INCIDENT_UPDATED','EMERGENCY_LOCATION_UPDATED','CONTROL_ROOM_ALERT_QUEUED','REPORT_SUBMITTED','REPORT_UPDATED','DISPATCH_TASK_CREATED','DISPATCH_TASK_UPDATED','CONTACT_ALERT_QUEUED','DEVICE_HEARTBEAT','DEVICE_OFFLINE_DETECTED','DEVICE_ONLINE_AGAIN','DEVICE_OFFLINE_EMAIL_STATUS'].includes(packet.type)) {
+          if (packet.type === 'INCIDENT_CREATED' || packet.type === 'INCIDENT_UPDATED') {
+            const incomingIncident = packet.data?.incident || packet.data;
+            if (incomingIncident?.event_id) {
+              setIncidents((previous) => {
+                const idx = previous.findIndex((i) => i.event_id === incomingIncident.event_id);
+                if (idx >= 0) {
+                  const updated = [...previous];
+                  updated[idx] = { ...updated[idx], ...incomingIncident };
+                  return updated;
+                }
+                return [incomingIncident, ...previous];
+              });
+              setSelectedIncident(incomingIncident);
+            }
             refreshData(true);
-            if (packet.type === 'INCIDENT_CREATED') notify(`Incoming safety alert: ${packet.data?.event_id || packet.data?.incident?.event_id || 'New event'}`, 'alert');
-            else if (packet.type === 'DEVICE_OFFLINE_DETECTED') notify(`Device missed heartbeat: ${packet.data?.incident?.event_id || 'offline event'} · last-known location only`, 'alert');
+            if (packet.type === 'INCIDENT_CREATED') notify(`Incoming safety alert: ${incomingIncident?.event_id || 'New event'}`, 'alert');
+          } else if (packet.type === 'EMERGENCY_LOCATION_UPDATED') {
+            const incidentData = packet.data?.incident;
+            const locData = packet.data?.location;
+            const targetId = incidentData?.event_id || locData?.eventId;
+            if (targetId) {
+              setIncidents((previous) => previous.map((i) => {
+                if (i.event_id === targetId) {
+                  return {
+                    ...i,
+                    ...(incidentData || {}),
+                    latitude: locData?.latitude ?? incidentData?.latitude ?? i.latitude,
+                    longitude: locData?.longitude ?? incidentData?.longitude ?? i.longitude,
+                    accuracy_meters: locData?.accuracyMeters ?? incidentData?.accuracy_meters ?? i.accuracy_meters,
+                    last_location_at: locData?.timestamp ?? incidentData?.last_location_at ?? Date.now(),
+                  };
+                }
+                return i;
+              }));
+            }
+            refreshData(true);
+          } else if (['CONTROL_ROOM_ALERT_QUEUED','REPORT_SUBMITTED','REPORT_UPDATED','DISPATCH_TASK_CREATED','DISPATCH_TASK_UPDATED','CONTACT_ALERT_QUEUED','DEVICE_HEARTBEAT','DEVICE_OFFLINE_DETECTED','DEVICE_ONLINE_AGAIN','DEVICE_OFFLINE_EMAIL_STATUS'].includes(packet.type)) {
+            refreshData(true);
+            if (packet.type === 'DEVICE_OFFLINE_DETECTED') notify(`Device missed heartbeat: ${packet.data?.incident?.event_id || 'offline event'} · last-known location only`, 'alert');
             else if (packet.type === 'DEVICE_OFFLINE_EMAIL_STATUS') notify(`Offline location email: ${packet.data?.offline_email_delivery_status || 'updated'}`, 'warning');
             else if (packet.type === 'REPORT_SUBMITTED') notify('A new report reached the Control Room.');
             else if (packet.type === 'DISPATCH_TASK_CREATED') notify('Internal dispatch task created.', 'warning');

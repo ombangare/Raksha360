@@ -10,10 +10,13 @@ const BASEMAP_STYLES = {
 };
 
 function hasCoordinates(item) {
+  const lat = Number(item?.latitude);
+  const lng = Number(item?.longitude);
   return item?.latitude !== null && item?.latitude !== undefined && item?.latitude !== '' &&
     item?.longitude !== null && item?.longitude !== undefined && item?.longitude !== '' &&
-    Number.isFinite(Number(item.latitude)) && Number.isFinite(Number(item.longitude)) &&
-    Math.abs(Number(item.latitude)) <= 90 && Math.abs(Number(item.longitude)) <= 180;
+    Number.isFinite(lat) && Number.isFinite(lng) &&
+    Math.abs(lat) <= 90 && Math.abs(lng) <= 180 &&
+    !(lat === 0 && lng === 0);
 }
 
 function escapeHtml(value) {

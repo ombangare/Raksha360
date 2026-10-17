@@ -85,8 +85,9 @@ class NaariKavachApp : Application() {
 
         backendClient = BackendApiClient(this) {
             val userToken = if (::authenticationRepo.isInitialized) authenticationRepo.currentUser?.sessionToken else null
-            val devToken = settingsRepo.policeAuthToken.value
-            val effectiveToken = if (!userToken.isNullOrBlank()) userToken else devToken
+            val devToken = settingsRepo.policeAuthToken.value.takeIf { it.isNotBlank() }
+            val fallbackToken = com.example.BuildConfig.DEFAULT_DEVICE_TOKEN
+            val effectiveToken = userToken ?: devToken ?: fallbackToken
             BackendApiClient.ApiConfiguration(
                 isConfigured = settingsRepo.policeEndpointConfigured.value && settingsRepo.policeEndpointUrl.value.isNotBlank(),
                 baseUrl = settingsRepo.policeEndpointUrl.value,

@@ -9,10 +9,10 @@ data class EmergencyEventRequest(
     val triggerType: String, // "VOICE_SOS", "PANIC_BUTTON", "JOURNEY_TIMEOUT"
     val phraseDetected: String,
     val speakerConfidence: Float,
-    val latitude: Double,
-    val longitude: Double,
-    val accuracyMeters: Float,
-    val locationDescription: String,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val accuracyMeters: Float? = null,
+    val locationDescription: String = "Location unavailable",
     val deviceSessionId: String,
     val isDemoMode: Boolean = false
 )

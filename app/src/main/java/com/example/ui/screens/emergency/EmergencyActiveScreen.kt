@@ -194,45 +194,78 @@ fun EmergencyActiveScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     // Item 1: Live Location Sharing
-                    val isGpsActive = currentLocation.latitude != 0.0
+                    val isGpsActive = !currentLocation.isFallback &&
+                        currentLocation.status == com.example.service.location.LocationStatus.ACTIVE_GPS &&
+                        currentLocation.latitude in -90.0..90.0 &&
+                        currentLocation.longitude in -180.0..180.0 &&
+                        (currentLocation.latitude != 0.0 || currentLocation.longitude != 0.0) &&
+                        !(currentLocation.latitude == com.example.service.location.AppLocationManager.NAGPUR_CENTER_LAT &&
+                          currentLocation.longitude == com.example.service.location.AppLocationManager.NAGPUR_CENTER_LNG)
+
+                    val locationStatusText = when {
+                        isGpsActive -> "Transmitting live GPS (${currentLocation.description.take(20)})"
+                        currentLocation.status == com.example.service.location.LocationStatus.ACQUIRING -> "Acquiring GPS fix…"
+                        currentLocation.status == com.example.service.location.LocationStatus.PERMISSION_DENIED -> "Location permission denied"
+                        currentLocation.status == com.example.service.location.LocationStatus.GPS_DISABLED -> "Device GPS disabled"
+                        currentLocation.status == com.example.service.location.LocationStatus.TIMEOUT -> "Location timeout"
+                        else -> "Location unavailable"
+                    }
+                    val locationColor = if (isGpsActive) SafeGreen else Color(0xFFFFA726)
+
                     EmergencyStatusItem(
                         icon = Icons.Default.LocationOn,
-                        iconTint = if (isGpsActive) SafeGreen else Color(0xFFFFA726),
-                        iconBg = (if (isGpsActive) SafeGreen else Color(0xFFFFA726)).copy(alpha = 0.2f),
+                        iconTint = locationColor,
+                        iconBg = locationColor.copy(alpha = 0.2f),
                         title = "Live location sharing",
-                        statusText = if (isGpsActive) "Active (Nagpur)" else "Sector Fallback",
-                        statusColor = if (isGpsActive) SafeGreen else Color(0xFFFFA726)
+                        statusText = locationStatusText,
+                        statusColor = locationColor
                     )
 
                     Spacer(modifier = Modifier.height(14.dp))
 
                     // Item 2: Trusted Contacts Notified
                     val activeContacts = trustedContacts.filter { it.isActive }
+                    val notifiedCount = activeEmergency?.trustedContactsNotifiedCount ?: 0
                     val contactsStatus = when {
-                        trustedContacts.isEmpty() -> "No contacts"
-                        pendingQueueCount > 0 -> "Queued (${activeContacts.size})"
-                        else -> "${activeContacts.size} notified"
+                        activeContacts.isEmpty() -> "No active contacts"
+                        notifiedCount > 0 -> "$notifiedCount notified (Confirmed)"
+                        pendingQueueCount > 0 -> "Queued offline (${activeContacts.size})"
+                        isDemoMode -> "Simulation queued (${activeContacts.size})"
+                        else -> "Gateway pending (${activeContacts.size})"
                     }
+                    val contactsColor = if (notifiedCount > 0) SafeGreen else Color(0xFFFFA726)
+
                     EmergencyStatusItem(
                         icon = Icons.Default.People,
-                        iconTint = Color(0xFFFFA726),
-                        iconBg = Color(0xFFFFA726).copy(alpha = 0.2f),
+                        iconTint = contactsColor,
+                        iconBg = contactsColor.copy(alpha = 0.2f),
                         title = "Trusted contacts notified",
                         statusText = contactsStatus,
-                        statusColor = if (activeContacts.isNotEmpty()) Color.White.copy(alpha = 0.9f) else Color(0xFFFFA726)
+                        statusColor = contactsColor
                     )
 
                     Spacer(modifier = Modifier.height(14.dp))
 
                     // Item 3: Police Control Room Notification
-                    val policeStatus = if (isDemoMode) "Demo Simulated" else "Unavailable (Dial 112)"
+                    val policeAcknowledged = activeEmergency?.policeNotified == true
+                    val trackingId = activeEmergency?.policeTrackingId
+                    val policeStatus = when {
+                        policeAcknowledged -> "Official Gateway Dispatched"
+                        trackingId != null && isDemoMode -> "Demo Simulated (Control Room)"
+                        trackingId != null -> "Control Room Queued (Dial 112)"
+                        pendingQueueCount > 0 -> "Pending transmission (Dial 112)"
+                        isDemoMode -> "Demo Simulated (Dial 112)"
+                        else -> "Not Dispatched (Dial 112)"
+                    }
+                    val policeColor = if (policeAcknowledged) SafeGreen else if (trackingId != null && !isDemoMode) Color(0xFF38BDF8) else Color(0xFFFFA726)
+
                     EmergencyStatusItem(
                         icon = Icons.Default.Shield,
-                        iconTint = ShieldBlue,
-                        iconBg = ShieldBlue.copy(alpha = 0.2f),
+                        iconTint = policeColor,
+                        iconBg = policeColor.copy(alpha = 0.2f),
                         title = "Police control room",
                         statusText = policeStatus,
-                        statusColor = if (isDemoMode) SafeGreen else Color(0xFFFFA726)
+                        statusColor = policeColor
                     )
 
                     Spacer(modifier = Modifier.height(14.dp))
@@ -243,7 +276,7 @@ fun EmergencyActiveScreen(
                         iconTint = Color(0xFFAB47BC),
                         iconBg = Color(0xFFAB47BC).copy(alpha = 0.2f),
                         title = "Recording incident data",
-                        statusText = "In progress",
+                        statusText = "In progress (Encrypted)",
                         statusColor = Color.White.copy(alpha = 0.9f)
                     )
                 }
