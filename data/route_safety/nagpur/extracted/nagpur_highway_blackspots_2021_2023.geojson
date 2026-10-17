@@ -1,0 +1,21 @@
+{
+  "type": "FeatureCollection",
+  "name": "Nagpur City National Highway Accident Blackspots 2021-2023",
+  "metadata": {
+    "publisher": "Maharashtra Highway Traffic Police, Government of Maharashtra",
+    "source_report": "Maharashtra Black Spot 2021-2023; CP Unit Black Spot Year 2021-2023, National Highway (NH), Nagpur City section",
+    "source_url": "https://highwaypolice.maharashtra.gov.in/blackspot/",
+    "source_report_pdf": "https://cdnbbsr.s3waas.gov.in/s35dec707028b05bcbd3a1db5640f842c5/uploads/2025/01/202501241645153799.pdf",
+    "data_period": "2021-2023",
+    "retrieved_on": "2026-10-17",
+    "coordinate_order": "GeoJSON coordinates are [longitude, latitude]",
+    "coverage_warning": "Five listed Nagpur City National Highway blackspots only. Not a complete citywide road-safety, crime, or personal-safety dataset."
+  },
+  "features": [
+    {"type":"Feature","id":"MH-NGP-BS-001","geometry":{"type":"Point","coordinates":[79.11709,21.184]},"properties":{"id":"MH-NGP-BS-001","city":"Nagpur City","jurisdiction_police_station":"Yashodhara Nagar / Kapil Nagar / Pachpawli","highway":"NH-7","location":"Maruti Showroom Chowk","accidents_by_year":{"2021":2,"2022":7,"2023":3},"accidents_total_2021_2023":12,"fatalities_by_year":{"2021":1,"2022":4,"2023":0},"fatalities_total_2021_2023":5,"data_period":"2021-2023","source_url":"https://highwaypolice.maharashtra.gov.in/blackspot/","record_type":"official_historical_highway_accident_blackspot"}},
+    {"type":"Feature","id":"MH-NGP-BS-002","geometry":{"type":"Point","coordinates":[79.14954,21.15107]},"properties":{"id":"MH-NGP-BS-002","city":"Nagpur City","jurisdiction_police_station":"Pardi","highway":"NH-6","location":"Juna Pardi Naka","accidents_by_year":{"2021":2,"2022":4,"2023":2},"accidents_total_2021_2023":8,"fatalities_by_year":{"2021":1,"2022":0,"2023":1},"fatalities_total_2021_2023":2,"data_period":"2021-2023","source_url":"https://highwaypolice.maharashtra.gov.in/blackspot/","record_type":"official_historical_highway_accident_blackspot"}},
+    {"type":"Feature","id":"MH-NGP-BS-003","geometry":{"type":"Point","coordinates":[79.15803,21.14971]},"properties":{"id":"MH-NGP-BS-003","city":"Nagpur City","jurisdiction_police_station":"Pardi","highway":"NH-6","location":"Hanuman Mandir","accidents_by_year":{"2021":1,"2022":3,"2023":1},"accidents_total_2021_2023":5,"fatalities_by_year":{"2021":0,"2022":2,"2023":1},"fatalities_total_2021_2023":3,"data_period":"2021-2023","source_url":"https://highwaypolice.maharashtra.gov.in/blackspot/","record_type":"official_historical_highway_accident_blackspot"}},
+    {"type":"Feature","id":"MH-NGP-BS-004","geometry":{"type":"Point","coordinates":[79.18605,21.14155]},"properties":{"id":"MH-NGP-BS-004","city":"Nagpur City","jurisdiction_police_station":"Pardi","highway":"NH-6","location":"Prakash High School to Kapshi Puliya","accidents_by_year":{"2021":5,"2022":10,"2023":0},"accidents_total_2021_2023":15,"fatalities_by_year":{"2021":3,"2022":9,"2023":0},"fatalities_total_2021_2023":12,"data_period":"2021-2023","source_url":"https://highwaypolice.maharashtra.gov.in/blackspot/","record_type":"official_historical_highway_accident_blackspot"}},
+    {"type":"Feature","id":"MH-NGP-BS-005","geometry":{"type":"Point","coordinates":[78.97545,21.14421]},"properties":{"id":"MH-NGP-BS-005","city":"Nagpur City","jurisdiction_police_station":"Wadi","highway":"NH-6","location":"8th Mile Amravati Road","accidents_by_year":{"2021":4,"2022":1,"2023":0},"accidents_total_2021_2023":5,"fatalities_by_year":{"2021":1,"2022":1,"2023":0},"fatalities_total_2021_2023":2,"data_period":"2021-2023","source_url":"https://highwaypolice.maharashtra.gov.in/blackspot/","record_type":"official_historical_highway_accident_blackspot"}}
+  ]
+}

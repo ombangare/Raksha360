@@ -145,6 +145,7 @@ class NagpurRouteSafetyEngine:
     def _load_blackspots(self) -> None:
         """Loads Maharashtra Highway Traffic Police national highway blackspot GeoJSON/CSV."""
         geojson_candidates = [
+            self.extracted_dir / "nagpur_highway_blackspots_2021_2023.geojson",
             self.bundle_dir / "nagpur_highway_blackspots_2021_2023.geojson",
             self.bundle_dir
             / "raksha360_nagpur_route_data"
@@ -470,7 +471,11 @@ class NagpurRouteSafetyEngine:
                 default=1000.0,
             )
             is_wooded_pt = any(gp.geometry.contains(pt_geom) for gp in self.green_polygons)
-            if min_fac_dist > 500.0 and (is_wooded_pt or unlit_m > 0):
+            is_unlit_pt = any(
+                rl.lit_status == "EXPLICIT_UNLIT" and rl.geometry.distance(pt_geom) < 0.0003
+                for rl in self.roads_lighting
+            )
+            if min_fac_dist > 500.0 and (is_wooded_pt or is_unlit_pt):
                 isolated_sample_count += 1
 
         isolated_km = round((isolated_sample_count / len(sample_points)) * route_length_km, 3)
