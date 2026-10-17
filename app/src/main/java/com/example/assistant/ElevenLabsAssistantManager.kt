@@ -87,6 +87,9 @@ class ElevenLabsAssistantManager(
     private val _isMuted = MutableStateFlow(false)
     val isMuted: StateFlow<Boolean> = _isMuted.asStateFlow()
 
+    private val _audioLevel = MutableStateFlow(0f)
+    val audioLevel: StateFlow<Float> = _audioLevel.asStateFlow()
+
     private var webSocket: WebSocket? = null
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
@@ -311,6 +314,16 @@ class ElevenLabsAssistantManager(
             while (isActive && _state.value != State.DISCONNECTED) {
                 val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
                 if (read > 0 && !_isMuted.value) {
+                    var sum = 0.0
+                    var i = 0
+                    while (i < read - 1) {
+                        val sample = (buffer[i].toInt() and 0xFF) or (buffer[i + 1].toInt() shl 8)
+                        sum += (sample.toDouble() * sample.toDouble())
+                        i += 2
+                    }
+                    val rms = (kotlin.math.sqrt(sum / (read / 2.0)) / 16384.0).toFloat().coerceIn(0f, 1f)
+                    _audioLevel.value = _audioLevel.value * 0.6f + rms * 0.4f
+
                     val base64Chunk = Base64.encodeToString(buffer, 0, read, Base64.NO_WRAP)
                     val chunkJson = JSONObject().apply {
                         put("user_audio_chunk", base64Chunk)
@@ -351,6 +364,16 @@ class ElevenLabsAssistantManager(
     private fun playAudioChunk(base64: String) {
         try {
             val pcmData = Base64.decode(base64, Base64.DEFAULT)
+            var sum = 0.0
+            var i = 0
+            while (i < pcmData.size - 1) {
+                val sample = (pcmData[i].toInt() and 0xFF) or (pcmData[i + 1].toInt() shl 8)
+                sum += (sample.toDouble() * sample.toDouble())
+                i += 2
+            }
+            val rms = (kotlin.math.sqrt(sum / (pcmData.size / 2.0)) / 16384.0).toFloat().coerceIn(0f, 1f)
+            _audioLevel.value = _audioLevel.value * 0.4f + (rms * 1.5f).coerceIn(0f, 1f) * 0.6f
+
             audioTrack?.write(pcmData, 0, pcmData.size)
             _state.value = State.CONNECTED_SPEAKING
         } catch (_: Exception) {}
@@ -394,6 +417,7 @@ class ElevenLabsAssistantManager(
         webSocket = null
 
         MicrophoneCoordinator.releaseMicFromAssistant(context)
+        _audioLevel.value = 0f
         _state.value = State.DISCONNECTED
     }
 

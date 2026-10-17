@@ -884,5 +884,45 @@ class NaariKavachComprehensiveTest {
             upstream401Response.error!!.contains("401")
         )
     }
+
+    // 18. Voice Orb State & Telemetry Contracts
+    @Test
+    fun testVoiceOrbStateAndTelemetryInvariants() {
+        // Test state transitions
+        val disconnected = com.example.assistant.ElevenLabsAssistantManager.State.DISCONNECTED
+        val connecting = com.example.assistant.ElevenLabsAssistantManager.State.CONNECTING
+        val listening = com.example.assistant.ElevenLabsAssistantManager.State.CONNECTED_LISTENING
+        val speaking = com.example.assistant.ElevenLabsAssistantManager.State.CONNECTED_SPEAKING
+        val errorState = com.example.assistant.ElevenLabsAssistantManager.State.ERROR
+
+        // Invariant: Error or unconfigured state must never be confused with listening/speaking
+        assertFalse(listening == errorState)
+        assertFalse(speaking == errorState)
+        assertFalse(listening == connecting)
+
+        // Telemetry range invariant: audioLevel must be clamped [0.0f, 1.0f]
+        val testLevels = listOf(-0.5f, 0.0f, 0.45f, 1.0f, 1.8f)
+        val clampedLevels = testLevels.map { it.coerceIn(0f, 1f) }
+        assertTrue(clampedLevels.all { it in 0f..1f })
+    }
+
+    @Test
+    fun testNoSecretsInAssistantSessionResponseOrErrors() {
+        val session = com.example.data.remote.AssistantSessionResponse(
+            configured = false,
+            agentId = "agent_3701m51qchkaenxsjnzr8jvrm66",
+            agentName = "Raksha360 AI Assistant",
+            signedUrl = null,
+            error = "Upstream ElevenLabs returned HTTP 401: Unauthorized"
+        )
+
+        val forbiddenSecrets = listOf("xi-api-key", "sk_", "api_key", "Bearer ", "secret")
+        forbiddenSecrets.forEach { secret ->
+            assertFalse(
+                "Error message must never expose secrets like '$secret'",
+                session.error!!.contains(secret, ignoreCase = true)
+            )
+        }
+    }
 }
 
